@@ -20,6 +20,12 @@ node <paperclip>/node_modules/paperclipai/dist/index.js plugin install <this dir
 
 Manifest changes (capabilities, slots, config schema, database) need `plugin uninstall <key> --force` then `plugin install`; a rebuild alone only reloads worker and UI code. A stale worker after a rebuild: `plugin disable <key>` then `plugin enable <key>`.
 
+## Docs
+
+- `docs/paperclip.md`: what Paperclip is, where it lives on disk, objects, CLI calls, HTTP routes.
+- `docs/sdk-reference.md`: the plugin SDK surface this repo uses, verified names.
+- `docs/design-language.md`: tokens, signature, layout, presets, copy rules.
+
 ## Layout
 
 - `src/shared/types.ts`: the contract between worker and UI. Add fields, never rename. Every UI data call passes `companyId`.

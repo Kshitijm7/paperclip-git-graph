@@ -79,6 +79,10 @@ Public repositories need nothing. For private ones the plugin can reuse a local 
 | `commitLimit` | 400 | Commits kept in the cache per company. The page loads 120 at a time as you scroll. |
 | `branchPattern` | `^agent/(?<issue>[A-Z]+-\d+)-` | Regex with a named group `issue`. |
 
+## Docs
+
+[Paperclip from the plugin's side](docs/paperclip.md), [SDK reference](docs/sdk-reference.md), [design language](docs/design-language.md).
+
 ## Develop
 
 ```bash
