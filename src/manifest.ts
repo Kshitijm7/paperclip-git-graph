@@ -58,6 +58,13 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "owner/name. Leave empty to auto-detect from the origin remote.",
         pattern: "^$|^[^/\\s]+/[^/\\s]+$"
       },
+      githubAuth: {
+        type: "string",
+        title: "GitHub auth",
+        description: "How to authenticate to GitHub. 'auto' prefers a saved token, then the local gh CLI login.",
+        enum: ["auto", "secret", "gh-cli", "none"],
+        default: "auto"
+      },
       fetchIntervalMinutes: {
         type: "number",
         title: "Fetch interval (minutes)",

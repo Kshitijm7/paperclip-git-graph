@@ -13,10 +13,12 @@ import {
   type GitRef,
   type PluginSettings,
   type RepoSnapshot,
+  type StatusGithub,
 } from "../shared/types.js";
 import { GRAPH_COLORS, generateGraph, maxGraphX, type GraphLayout } from "../graph/layout.js";
 import { CSS, ROW_HEIGHT, prStateVar, relativeDate, shortDate } from "./theme.js";
 import { Welcome, type StatusData } from "./Welcome.js";
+import { GithubChip } from "./GithubChip.js";
 
 // PluginHostContext has no pluginId field (checked plugin-sdk/dist/ui/types.d.ts), so the manifest id is hardcoded here.
 const PLUGIN_MANIFEST_ID = "paperclip-git-graph";
@@ -222,7 +224,12 @@ export function GraphPage({ context }: PluginPageProps) {
         </div>
 
         {status?.config && (
-          <SettingsBar companyId={companyId} config={status.config} onSaved={() => statusQuery.refresh()} />
+          <SettingsBar
+            companyId={companyId}
+            config={status.config}
+            github={status.github}
+            onSaved={() => statusQuery.refresh()}
+          />
         )}
 
         {actionError && (
@@ -296,10 +303,12 @@ export function GraphPage({ context }: PluginPageProps) {
 function SettingsBar({
   companyId,
   config,
+  github,
   onSaved,
 }: {
   companyId: string;
   config: { effective: PluginSettings; saved: boolean };
+  github?: StatusGithub;
   onSaved: () => void;
 }) {
   const hostNavigation = useHostNavigation();
@@ -344,6 +353,7 @@ function SettingsBar({
       <span className="gg-dim">fetch every {fetchIntervalMinutes}m</span>
       <span className="gg-dim">{commitLimit} commit cap</span>
       {!config.saved && <span className="gg-badge">Defaults (not saved)</span>}
+      {github && <GithubChip companyId={companyId} github={github} />}
       <button className="gg-btn" disabled={saving} onClick={() => void saveDefaults()}>
         {saving ? "Saving..." : "Save defaults"}
       </button>

@@ -23,7 +23,7 @@
     "ui"
   ],
   "author": "Kshitij Mittal",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "devDependencies": {
     "@paperclipai/plugin-sdk": "2026.831.1",
     "@rollup/plugin-node-resolve": "^16.0.1",

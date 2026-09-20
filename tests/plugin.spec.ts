@@ -48,6 +48,7 @@ describe("manifest", () => {
       "branchPattern",
       "commitLimit",
       "fetchIntervalMinutes",
+      "githubAuth",
       "githubRepo",
       "githubToken"
     ]);
@@ -86,6 +87,19 @@ describe("scheduled fetch job", () => {
 
     expect(harness.getState({ scopeKind: "company", scopeId: "company-a", stateKey: "fetchedAt" })).toBeUndefined();
     expect(harness.getState({ scopeKind: "company", scopeId: "company-b", stateKey: "fetchedAt" })).toBeUndefined();
+  });
+});
+
+describe("status github block", () => {
+  it("reports mode 'none' without touching secrets or gh cli when githubAuth is 'none'", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    harness.setConfig({ githubAuth: "none" });
+
+    const status = (await harness.getData(DATA_KEYS.status, { companyId: "company-a" })) as {
+      github: { mode: string; ok: boolean };
+    };
+    expect(status.github).toEqual({ mode: "none", ok: false });
   });
 });
 

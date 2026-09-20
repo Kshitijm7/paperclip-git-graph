@@ -9,8 +9,11 @@ export const DEFAULTS: PluginSettings = {
   fetchIntervalMinutes: DEFAULT_FETCH_INTERVAL_MINUTES,
   commitLimit: DEFAULT_COMMIT_LIMIT,
   branchPattern: DEFAULT_BRANCH_PATTERN,
-  githubToken: null
+  githubToken: null,
+  githubAuth: "auto"
 };
+
+const GITHUB_AUTH_MODES = new Set(["auto", "secret", "gh-cli", "none"]);
 
 const warnedCompanies = new Set<string>();
 
@@ -50,6 +53,7 @@ export async function resolveConfig(ctx: PluginContext, companyId: string): Prom
     fetchIntervalMinutes: Number.isFinite(fetchIntervalMinutes) && fetchIntervalMinutes > 0 ? fetchIntervalMinutes : DEFAULTS.fetchIntervalMinutes,
     commitLimit: Number.isFinite(commitLimit) && commitLimit > 0 ? commitLimit : DEFAULTS.commitLimit,
     branchPattern: resolvedBranchPattern,
-    githubToken: raw.githubToken ?? DEFAULTS.githubToken
+    githubToken: raw.githubToken ?? DEFAULTS.githubToken,
+    githubAuth: typeof raw.githubAuth === "string" && GITHUB_AUTH_MODES.has(raw.githubAuth) ? (raw.githubAuth as PluginSettings["githubAuth"]) : DEFAULTS.githubAuth
   };
 }

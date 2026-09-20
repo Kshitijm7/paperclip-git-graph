@@ -6,6 +6,8 @@ import type { BranchOwnership, GraphQuery, PullRequestInfo, RepoSnapshot } from 
 import { fetchAll, gitVersion, readCommits, readHead, readRefs, readWorktrees } from "./worker/git.js";
 import { browseDirectory, listRoots, listWorkspaceCandidates, pushRecent, getRecent } from "./worker/fs.js";
 import { DEFAULTS, resolveConfig, type PluginSettings } from "./worker/config.js";
+import { detectGhCli, resolveGithubToken } from "./worker/github-auth.js";
+import type { StatusGithub } from "./shared/types.js";
 import {
   buildOwnership,
   fetchPullRequests,
@@ -18,10 +20,35 @@ import {
 
 const CACHE_TTL_MS = 20_000;
 const REMOTE_TTL_MS = 5 * 60_000;
+const GH_STATUS_TTL_MS = 5 * 60_000;
 const COMMENT_ISSUE_CAP = 50;
 
 let context: PluginContext | null = null;
 const snapshotCache = new Map<string, { at: number; key: string; snapshot: RepoSnapshot }>();
+let ghStatusCache: { at: number; status: Awaited<ReturnType<typeof detectGhCli>> } | null = null;
+
+async function cachedGhStatus() {
+  if (ghStatusCache && Date.now() - ghStatusCache.at < GH_STATUS_TTL_MS) return ghStatusCache.status;
+  const status = await detectGhCli();
+  ghStatusCache = { at: Date.now(), status };
+  return status;
+}
+
+async function buildGithubStatus(ctx: PluginContext, companyId: string, cfg: PluginSettings, cwd: string | null): Promise<StatusGithub> {
+  const slug = cwd ? await resolveRepoSlug(cwd, cfg.githubRepo || undefined).catch(() => null) : null;
+  const hasSecret = Boolean(cfg.githubToken && typeof cfg.githubToken === "object");
+  const mode = cfg.githubAuth ?? "auto";
+
+  if (mode === "secret" || (mode === "auto" && hasSecret)) {
+    return { mode: "secret", repo: slug ?? undefined, ok: hasSecret };
+  }
+  if (mode === "gh-cli" || mode === "auto") {
+    const gh = await cachedGhStatus();
+    if (gh.available) return { mode: "gh-cli", login: gh.login, repo: slug ?? undefined, ok: true };
+    if (mode === "gh-cli") return { mode: "gh-cli", repo: slug ?? undefined, ok: false, error: gh.error };
+  }
+  return { mode: "none", repo: slug ?? undefined, ok: false };
+}
 
 function requireCompanyId(params: Record<string, unknown>): string {
   const companyId = params.companyId;
@@ -60,15 +87,7 @@ async function loadPullRequests(
   const cached = (await ctx.state.get(key)) as { at?: number; prs?: PullRequestInfo[] } | null;
   if (!force && cached?.at && Date.now() - cached.at < REMOTE_TTL_MS) return cached.prs ?? [];
 
-  let token: string | null = null;
-  const ref = cfg.githubToken;
-  if (ref && typeof ref === "object") {
-    try {
-      token = await ctx.secrets.resolve(ref as never, { companyId, configPath: "githubToken" });
-    } catch {
-      ctx.logger.warn("Could not resolve githubToken; falling back to anonymous GitHub access");
-    }
-  }
+  const token = await resolveGithubToken(ctx, companyId, cfg);
 
   try {
     const prs = await fetchPullRequests(slug, token, (url, init) => ctx.http.fetch(url as string, init));
@@ -213,7 +232,8 @@ const plugin = definePlugin({
         folder: status,
         fetchedAt: await fetchedAt(ctx, companyId),
         gitVersion: version,
-        config: { effective, saved: await isConfigSaved(ctx, companyId) }
+        config: { effective, saved: await isConfigSaved(ctx, companyId) },
+        github: await buildGithubStatus(ctx, companyId, effective, path)
       };
     });
 

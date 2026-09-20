@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
-import { ACTION_KEYS, DATA_KEYS, type BrowseResult, type RepoCandidates, type StatusConfig } from "../shared/types.js";
+import { ACTION_KEYS, DATA_KEYS, type BrowseResult, type RepoCandidates, type StatusConfig, type StatusGithub } from "../shared/types.js";
 import { CSS } from "./theme.js";
+import { GithubChip } from "./GithubChip.js";
 
 export interface StatusData {
   configured: boolean;
@@ -9,6 +10,7 @@ export interface StatusData {
   healthy: boolean;
   problems: string[];
   config?: StatusConfig;
+  github?: StatusGithub;
 }
 
 interface WelcomeProps {
@@ -72,6 +74,8 @@ export function Welcome({ companyId, status, onBound }: WelcomeProps) {
           Pick the repository this company works in. The graph, branch owners and pull requests come from it.
         </p>
       </div>
+
+      {status?.github && <GithubChip companyId={companyId} github={status.github} />}
 
       {status && status.path && !status.healthy && (
         <div style={{ color: "var(--gg-red)" }}>

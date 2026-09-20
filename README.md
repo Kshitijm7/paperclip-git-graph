@@ -2,7 +2,7 @@
 
 A SourceGit-style commit graph rendered inside [Paperclip](https://github.com/paperclipai/paperclip), the AI-agent company orchestrator. For every branch it shows who is working on it: the Paperclip issue and assigned agent, the GitHub pull request, and any branch names mentioned in issue run logs.
 
-The graph layout is a TypeScript port of SourceGit's `CommitGraph.cs` ([sourcegit-scm/sourcegit](https://github.com/sourcegit-scm/sourcegit), MIT). Credit and license text for that part are in LICENSE.
+The graph layout is a TypeScript port of SourceGit's `CommitGraph.cs` ([sourcegit-scm/sourcegit](https://github.com/sourcegit-scm/sourcegit), MIT). Credit and license text for that part are in NOTICE.
 
 ## What
 
@@ -104,4 +104,4 @@ Commit graph layout ported from SourceGit's `CommitGraph.cs` ([sourcegit-scm/sou
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE and NOTICE.

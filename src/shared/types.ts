@@ -116,17 +116,28 @@ export interface BrowseResult {
   error?: string;
 }
 
+export type GithubAuthMode = "auto" | "secret" | "gh-cli" | "none";
+
 export interface PluginSettings {
   githubRepo: string;
   fetchIntervalMinutes: number;
   commitLimit: number;
   branchPattern: string;
   githubToken: unknown | null;
+  githubAuth: GithubAuthMode;
 }
 
 export interface StatusConfig {
   effective: PluginSettings;
   saved: boolean;
+}
+
+export interface StatusGithub {
+  mode: "secret" | "gh-cli" | "none";
+  login?: string;
+  repo?: string;
+  ok: boolean;
+  error?: string;
 }
 
 export const DATA_KEYS = {
