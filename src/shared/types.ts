@@ -67,7 +67,8 @@ export interface RepoSnapshot {
   generatedAt: string;
   head: { sha: string; branch: string | null } | null;
   refs: GitRef[];
-  commits: GitCommit[];          // topo order, newest first, capped by `limit`
+  commits: GitCommit[];          // topo order, newest first, window [offset, offset+limit)
+  total?: number;                // total commits available for the query
   worktrees: GitWorktree[];
   ownership: BranchOwnership[];
   truncated: boolean;
@@ -76,6 +77,7 @@ export interface RepoSnapshot {
 export interface GraphQuery {
   companyId: string;
   limit?: number;          // default 400
+  offset?: number;         // for lazy loading; default 0
   firstParentOnly?: boolean;
   branch?: string;         // restrict to one ref; default all
 }
@@ -125,6 +127,8 @@ export interface PluginSettings {
   branchPattern: string;
   githubToken: unknown | null;
   githubAuth: GithubAuthMode;
+  theme: ThemePreset;
+  trunk: string;
 }
 
 export interface StatusConfig {
@@ -155,3 +159,84 @@ export const ACTION_KEYS = {
 } as const;
 
 export const FOLDER_KEY = "repo";
+
+// Wave 2 contract: cache, live updates, admin views.
+
+export interface CachedSnapshotMeta {
+  headSha: string | null;
+  refsHash: string;          // hash of all ref names + shas; changes when anything moves
+  generatedAt: string;
+  commitCount: number;
+  ownershipRefreshedAt?: string | null;
+}
+
+export type GitEventKind =
+  | "run.started" | "run.finished" | "run.failed"
+  | "branch.created" | "branch.updated" | "branch.deleted"
+  | "commit" | "pr.opened" | "pr.merged" | "pr.closed" | "fetch";
+
+export interface GitEvent {
+  id: string;
+  at: string;
+  kind: GitEventKind;
+  branch?: string;
+  sha?: string;
+  agentId?: string;
+  agentName?: string;
+  issueIdentifier?: string;
+  prNumber?: number;
+  summary: string;
+}
+
+export interface AgentGitCard {
+  agentId: string;
+  agentName: string;
+  agentStatus: string;
+  branch?: string;
+  issueIdentifier?: string;
+  issueTitle?: string;
+  lastCommitAt?: string;
+  lastCommitSubject?: string;
+  aheadOfTrunk?: number;
+  behindTrunk?: number;
+  pr?: PullRequestInfo;
+  lastRunAt?: string;
+  lastRunStatus?: string;
+}
+
+export interface IssueProgress {
+  issueIdentifier: string;
+  issueId?: string;
+  title?: string;
+  status?: string;
+  agentName?: string;
+  branch: string;
+  commits: number;
+  aheadOfTrunk: number;
+  behindTrunk: number;
+  pr?: PullRequestInfo;
+  stage: "no-branch" | "in-progress" | "pr-open" | "pr-draft" | "merged" | "closed";
+  updatedAt?: string;
+}
+
+export interface ActivityData {
+  trunk: string;              // e.g. "develop"
+  agents: AgentGitCard[];
+  issues: IssueProgress[];
+  events: GitEvent[];         // newest first, capped
+  generatedAt: string;
+}
+
+export interface RepoChangedEvent {
+  type: "repo.changed";
+  companyId: string;
+  reason: "fetch" | "run" | "job" | "config" | "manual";
+  meta: CachedSnapshotMeta;
+}
+
+export const STREAM_CHANNEL = "repo";
+export const DATA_KEYS_V2 = { activity: "activity", meta: "meta" } as const;
+
+// Theme presets: only accents, lane palette, chip style and density vary; surfaces stay host tokens.
+export type ThemePreset = "paperclip" | "sourcegit" | "gitlens" | "fork";
+export const THEME_PRESETS: ThemePreset[] = ["paperclip", "sourcegit", "gitlens", "fork"];

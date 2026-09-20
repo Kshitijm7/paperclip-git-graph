@@ -165,11 +165,15 @@ export async function fetchPullRequests(
   doFetch: typeof fetch = fetch
 ): Promise<PullRequestInfo[]> {
   const headers: Record<string, string> = {
+    "User-Agent": "paperclip-git-graph",
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28"
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   const response = await doFetch(`https://api.github.com/repos/${slug}/pulls?state=all&per_page=100`, { headers });
-  if (!response.ok) throw new Error(`GitHub returned ${response.status} for ${slug}`);
+  if (!response.ok) {
+    const remaining = response.headers.get("x-ratelimit-remaining");
+    throw new Error(`GitHub returned ${response.status} for ${slug} (ratelimit-remaining=${remaining ?? "unknown"})`);
+  }
   return mapPullRequests((await response.json()) as unknown[]);
 }

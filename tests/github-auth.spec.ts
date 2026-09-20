@@ -20,7 +20,9 @@ const baseSettings: PluginSettings = {
   commitLimit: 400,
   branchPattern: "^agent/(?<issue>[A-Z]+-\\d+)-",
   githubToken: null,
-  githubAuth: "auto"
+  githubAuth: "auto",
+  theme: "paperclip",
+  trunk: "develop"
 };
 
 describe("resolveGithubToken", () => {

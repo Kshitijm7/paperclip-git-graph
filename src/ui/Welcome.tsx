@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
 import { ACTION_KEYS, DATA_KEYS, type BrowseResult, type RepoCandidates, type StatusConfig, type StatusGithub } from "../shared/types.js";
-import { CSS } from "./theme.js";
+import { okColor } from "./theme.js";
 import { GithubChip } from "./GithubChip.js";
+import { useTheme } from "../theme/index.js";
 
 export interface StatusData {
   configured: boolean;
@@ -19,10 +20,10 @@ interface WelcomeProps {
   onBound: () => void;
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ border: "1px solid var(--gg-border)", borderRadius: 6, padding: 12, display: "grid", gap: 8 }}>
-      <h3 style={{ margin: 0, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--gg-fg-dim)" }}>
+    <div style={{ display: "grid", gap: 6 }}>
+      <h3 style={{ margin: 0, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--gg-fg-dim)" }}>
         {title}
       </h3>
       {children}
@@ -39,6 +40,7 @@ export function Welcome({ companyId, status, onBound }: WelcomeProps) {
 
   const candidatesQuery = usePluginData<RepoCandidates>(DATA_KEYS.candidates, { companyId });
   const bindAction = usePluginAction(ACTION_KEYS.bindFolder);
+  const { preset } = useTheme();
 
   async function bind(target: string, path: string) {
     setBusy(target);
@@ -66,78 +68,101 @@ export function Welcome({ companyId, status, onBound }: WelcomeProps) {
   const candidates = candidatesQuery.data;
 
   return (
-    <div className="gg-root" style={{ padding: 24, display: "grid", gap: 16, maxWidth: 720 }}>
-      <style>{CSS}</style>
-      <div>
-        <h2 style={{ margin: 0, fontSize: 16 }}>Git Graph</h2>
-        <p className="gg-dim" style={{ margin: "4px 0 0" }}>
-          Pick the repository this company works in. The graph, branch owners and pull requests come from it.
-        </p>
-      </div>
-
-      {status?.github && <GithubChip companyId={companyId} github={status.github} />}
-
-      {status && status.path && !status.healthy && (
-        <div style={{ color: "var(--gg-red)" }}>
-          Bound path {status.path} is not healthy: {status.problems.join("; ") || "unknown problem"}
+    <div className="gg-root" style={{ padding: 24, display: "flex", justifyContent: "center" }}>
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 640,
+          border: "1px solid var(--gg-border)",
+          borderRadius: "var(--gg-radius)",
+          background: "var(--gg-panel)",
+          padding: 20,
+          display: "grid",
+          gap: 16,
+        }}
+      >
+        <div>
+          <h2 style={{ margin: 0, fontSize: 16 }}>Git Graph</h2>
+          <p className="gg-dim" style={{ margin: "4px 0 0" }}>
+            Pick the repository this company works in, and the graph, branch owners and pull requests follow.
+          </p>
         </div>
-      )}
 
-      <Card title="Project workspaces">
-        {candidatesQuery.loading && <span className="gg-dim">Loading workspaces...</span>}
-        {!candidatesQuery.loading && (candidates?.workspaces.length ?? 0) === 0 && (
-          <span className="gg-dim">No project workspaces with a local path were found.</span>
+        {status && status.path && !status.healthy && (
+          <div style={{ color: "var(--gg-red)" }}>
+            Bound path {status.path} is not healthy: {status.problems.join("; ") || "unknown problem"}
+          </div>
         )}
-        {candidates?.workspaces.map((ws) => (
-          <div key={ws.path} className="gg-row" style={{ gridTemplateColumns: "1fr auto auto", padding: "4px 0" }}>
-            <div style={{ overflow: "hidden" }}>
-              <div className="gg-ell">{ws.projectName}</div>
-              <div className="gg-dim gg-mono gg-ell">{ws.path}</div>
+
+        <Section title="Project workspaces">
+          {candidatesQuery.loading && <span className="gg-dim">Loading workspaces...</span>}
+          {!candidatesQuery.loading && (candidates?.workspaces.length ?? 0) === 0 && (
+            <span className="gg-dim">No project workspaces with a local path were found.</span>
+          )}
+          {candidates?.workspaces.map((ws) => (
+            <div key={ws.path} className="gg-row" style={{ gridTemplateColumns: "1fr auto auto", padding: "4px 0" }}>
+              <div style={{ overflow: "hidden" }}>
+                <div className="gg-ell">{ws.projectName}</div>
+                <div className="gg-dim gg-mono gg-ell">{ws.path}</div>
+              </div>
+              {ws.isRepo && (
+                <span
+                  className="gg-badge"
+                  style={{ color: okColor, borderRadius: preset.chipStyle === "pill" ? 999 : undefined }}
+                >
+                  repo
+                </span>
+              )}
+              <button className="gg-btn" disabled={busy === ws.path} onClick={() => void bind(ws.path, ws.path)}>
+                {busy === ws.path ? "Binding..." : "Use"}
+              </button>
+              {error?.target === ws.path && <div style={{ color: "var(--gg-red)", gridColumn: "1 / -1" }}>{error.message}</div>}
             </div>
-            {ws.isRepo && <span className="gg-badge" style={{ color: "var(--gg-green)" }}>repo</span>}
-            <button className="gg-btn" disabled={busy === ws.path} onClick={() => void bind(ws.path, ws.path)}>
-              {busy === ws.path ? "Binding..." : "Use this"}
-            </button>
-            {error?.target === ws.path && <div style={{ color: "var(--gg-red)", gridColumn: "1 / -1" }}>{error.message}</div>}
-          </div>
-        ))}
-      </Card>
+          ))}
+        </Section>
 
-      <Card title="Recent">
-        {candidatesQuery.loading && <span className="gg-dim">Loading recent repositories...</span>}
-        {!candidatesQuery.loading && (candidates?.recent.length ?? 0) === 0 && (
-          <span className="gg-dim">No repositories bound yet.</span>
-        )}
-        {candidates?.recent.map((r) => (
-          <div key={r.path} className="gg-row" style={{ gridTemplateColumns: "1fr auto", padding: "4px 0" }}>
-            <span className="gg-dim gg-mono gg-ell">{r.path}</span>
-            <button className="gg-btn" disabled={busy === r.path} onClick={() => void bind(r.path, r.path)}>
-              {busy === r.path ? "Binding..." : "Use"}
-            </button>
-            {error?.target === r.path && <div style={{ color: "var(--gg-red)", gridColumn: "1 / -1" }}>{error.message}</div>}
-          </div>
-        ))}
-      </Card>
+        <Section title="Recent">
+          {candidatesQuery.loading && <span className="gg-dim">Loading recent repositories...</span>}
+          {!candidatesQuery.loading && (candidates?.recent.length ?? 0) === 0 && (
+            <span className="gg-dim">No repositories bound yet.</span>
+          )}
+          {candidates?.recent.map((r) => (
+            <div key={r.path} className="gg-row" style={{ gridTemplateColumns: "1fr auto", padding: "4px 0" }}>
+              <span className="gg-dim gg-mono gg-ell">{r.path}</span>
+              <button className="gg-btn" disabled={busy === r.path} onClick={() => void bind(r.path, r.path)}>
+                {busy === r.path ? "Binding..." : "Use"}
+              </button>
+              {error?.target === r.path && <div style={{ color: "var(--gg-red)", gridColumn: "1 / -1" }}>{error.message}</div>}
+            </div>
+          ))}
+        </Section>
 
-      <Card title="Browse">
-        {!browsing && (
-          <button className="gg-btn" onClick={() => openBrowser(candidates?.roots[0]?.path ?? "")}>
-            Browse
-          </button>
+        <Section title="Browse">
+          {!browsing && (
+            <button className="gg-btn" style={{ justifySelf: "start" }} onClick={() => openBrowser(candidates?.roots[0]?.path ?? "")}>
+              Browse folders
+            </button>
+          )}
+          {browsing && (
+            <BrowsePanel
+              companyId={companyId}
+              initialPath={browsePath}
+              roots={candidates?.roots ?? []}
+              busy={busy}
+              error={error}
+              manualPath={manualPath}
+              onManualPathChange={setManualPath}
+              onBind={bind}
+            />
+          )}
+        </Section>
+
+        {status?.github && (
+          <div style={{ borderTop: "1px solid var(--gg-border)", paddingTop: 12 }}>
+            <GithubChip companyId={companyId} github={status.github} amber={!status.github.ok} />
+          </div>
         )}
-        {browsing && (
-          <BrowsePanel
-            companyId={companyId}
-            initialPath={browsePath}
-            roots={candidates?.roots ?? []}
-            busy={busy}
-            error={error}
-            manualPath={manualPath}
-            onManualPathChange={setManualPath}
-            onBind={bind}
-          />
-        )}
-      </Card>
+      </div>
     </div>
   );
 }

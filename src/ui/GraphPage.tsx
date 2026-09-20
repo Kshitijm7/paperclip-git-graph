@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  KeyValueList,
   useHostNavigation,
   usePluginAction,
   usePluginData,
@@ -15,25 +16,34 @@ import {
   type RepoSnapshot,
   type StatusGithub,
 } from "../shared/types.js";
-import { GRAPH_COLORS, generateGraph, maxGraphX, type GraphLayout } from "../graph/layout.js";
-import { CSS, ROW_HEIGHT, prStateVar, relativeDate, shortDate } from "./theme.js";
+import { generateGraph, laneX, maxGraphX, type GraphLayout } from "../graph/layout.js";
+import { okColor, prStateVar, relativeDate, shortDate } from "./theme.js";
 import { Welcome, type StatusData } from "./Welcome.js";
 import { GithubChip } from "./GithubChip.js";
+import { ThemeProvider, buildAgentLaneMap, colorForAgent, laneColorFor, resolvePreset } from "../theme/index.js";
+import type { ThemePresetConfig } from "../theme/presets.js";
+import { THEME_PRESETS } from "../shared/types.js";
+import { useLiveRevision } from "./tabs/LiveContext.js";
+import { dedupeCommitsBySha, isEndOfPages, isNearBottom } from "./pagination.js";
 
 // PluginHostContext has no pluginId field (checked plugin-sdk/dist/ui/types.d.ts), so the manifest id is hardcoded here.
 const PLUGIN_MANIFEST_ID = "paperclip-git-graph";
-const LIMITS = [200, 400, 1000];
+const LIMITS = [120, 200, 400, 1000];
+const PAGE_LOAD_THRESHOLD_ROWS = 20;
 const VIEWPORT_HEIGHT = 520;
 const OVERSCAN = 8;
 const AUTHOR_WIDTH = 140;
-const SHA_WIDTH = 80;
-const TIME_WIDTH = 110;
+const SHA_WIDTH = 72;
+const TIME_WIDTH = 96;
 const GRID = (graphWidth: number) =>
   `${graphWidth}px minmax(0, 1fr) ${AUTHOR_WIDTH}px ${SHA_WIDTH}px ${TIME_WIDTH}px`;
 
 export function GraphPage({ context }: PluginPageProps) {
   const companyId = context.companyId ?? "";
-  const [limit, setLimit] = useState(400);
+  const [limit, setLimit] = useState(120); // repurposed as page size for lazy loading
+  const [offset, setOffset] = useState(0);
+  const [pages, setPages] = useState<Map<number, GitCommit[]>>(new Map());
+  const [endReached, setEndReached] = useState(false);
   const [firstParentOnly, setFirstParentOnly] = useState(false);
   const [branch, setBranch] = useState("");
   const [search, setSearch] = useState("");
@@ -44,7 +54,16 @@ export function GraphPage({ context }: PluginPageProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [graphScrollLeft, setGraphScrollLeft] = useState(0);
   const [tableWidth, setTableWidth] = useState(800);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [themeOverride, setThemeOverride] = useState<string | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
+  const prevShasRef = useRef<Set<string>>(new Set());
+  const prevGeneratedAtRef = useRef<string | null>(null);
+  const prevHeadShaRef = useRef<string | null>(null);
+  const scrollElRef = useRef<HTMLDivElement | null>(null);
+  const [newShas, setNewShas] = useState<Set<string>>(new Set());
+  const liveRevision = useLiveRevision();
   // callback ref: the table mounts after the welcome screen, so a mount-time effect would miss it
   const tableRef = useCallback((el: HTMLDivElement | null) => {
     observerRef.current?.disconnect();
@@ -57,6 +76,7 @@ export function GraphPage({ context }: PluginPageProps) {
   const snapshotQuery = usePluginData<RepoSnapshot>(DATA_KEYS.snapshot, {
     companyId,
     limit,
+    offset,
     firstParentOnly,
     branch: branch || undefined,
   });
@@ -66,7 +86,42 @@ export function GraphPage({ context }: PluginPageProps) {
   const refreshOwnership = usePluginAction(ACTION_KEYS.refreshOwnership);
 
   const snapshot = snapshotQuery.data;
-  const commits = useMemo(() => snapshot?.commits ?? [], [snapshot]);
+
+  // Filters, page size, or a live-revision bump start a fresh sequence of pages from offset 0.
+  useEffect(() => {
+    setPages(new Map());
+    setEndReached(false);
+    setOffset(0);
+  }, [limit, firstParentOnly, branch, liveRevision]);
+
+  // Record each page as it arrives, keyed by the offset it was requested at.
+  useEffect(() => {
+    if (!snapshot) return;
+    setPages((prev) => {
+      if (prev.has(offset)) return prev;
+      const next = new Map(prev);
+      next.set(offset, snapshot.commits);
+      return next;
+    });
+    if (isEndOfPages(snapshot.commits.length, limit, offset, snapshot.total)) setEndReached(true);
+  }, [snapshot, offset, limit]);
+
+  // Reset scroll to top only when the head actually moved (a new commit landed), not on every poll.
+  useEffect(() => {
+    if (!snapshot || offset !== 0) return;
+    const headSha = snapshot.head?.sha ?? null;
+    if (prevHeadShaRef.current !== null && prevHeadShaRef.current !== headSha) {
+      setScrollTop(0);
+      if (scrollElRef.current) scrollElRef.current.scrollTop = 0;
+    }
+    prevHeadShaRef.current = headSha;
+  }, [snapshot, offset]);
+
+  const commits = useMemo(() => {
+    if (pages.size === 0) return snapshot?.commits ?? [];
+    const ordered = [...pages.keys()].sort((a, b) => a - b).flatMap((k) => pages.get(k)!);
+    return dedupeCommitsBySha(ordered);
+  }, [pages, snapshot]);
   const ownership = branchesQuery.data ?? snapshot?.ownership ?? [];
 
   const layout = useMemo(() => generateGraph(commits, { firstParentOnly }), [commits, firstParentOnly]);
@@ -86,6 +141,28 @@ export function GraphPage({ context }: PluginPageProps) {
     return map;
   }, [ownership]);
 
+  const status = statusQuery.data;
+  const presetName = themeOverride ?? status?.config?.effective.theme;
+  const preset = resolvePreset(presetName);
+  const rowHeight = preset.rowHeight;
+  const agentLaneMap = useMemo(
+    () => buildAgentLaneMap(commits, snapshot?.refs ?? [], ownerByBranch),
+    [commits, snapshot, ownerByBranch],
+  );
+
+  // Only mark rows added since the last snapshot generation as "new"; a fresh mount is not a change.
+  useEffect(() => {
+    if (!snapshot) return;
+    const currentShas = new Set(commits.map((c) => c.sha));
+    if (prevGeneratedAtRef.current && prevGeneratedAtRef.current !== snapshot.generatedAt) {
+      const added = new Set<string>();
+      for (const sha of currentShas) if (!prevShasRef.current.has(sha)) added.add(sha);
+      setNewShas(added);
+    }
+    prevGeneratedAtRef.current = snapshot.generatedAt;
+    prevShasRef.current = currentShas;
+  }, [snapshot?.generatedAt, commits]);
+
   const needle = search.trim().toLowerCase();
   const rows = useMemo(() => {
     if (!needle) return commits;
@@ -104,10 +181,22 @@ export function GraphPage({ context }: PluginPageProps) {
   const graphColWidth = Math.min(graphWidth, graphCap);
   const graphScrollable = graphWidth > graphColWidth;
   const maxGraphScroll = Math.max(0, graphWidth - graphColWidth);
-  const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const end = Math.min(rows.length, Math.ceil((scrollTop + VIEWPORT_HEIGHT) / ROW_HEIGHT) + OVERSCAN);
+  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
+  const end = Math.min(rows.length, Math.ceil((scrollTop + VIEWPORT_HEIGHT) / rowHeight) + OVERSCAN);
   const visible = rows.slice(start, end);
   const selectedCommit = commits.find((c) => c.sha === selected) ?? null;
+  const isFirstLoad = snapshotQuery.loading && pages.size === 0 && !snapshot;
+  const isLoadingMore = snapshotQuery.loading && pages.size > 0;
+
+  function handleScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    setScrollTop(el.scrollTop);
+    if (endReached || snapshotQuery.loading) return;
+    if (!isNearBottom(el.scrollTop, VIEWPORT_HEIGHT, el.scrollHeight, rowHeight, PAGE_LOAD_THRESHOLD_ROWS)) return;
+    const nextOffset = offset + limit;
+    if (pages.has(nextOffset)) return;
+    setOffset(nextOffset);
+  }
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -123,47 +212,65 @@ export function GraphPage({ context }: PluginPageProps) {
     }
   }
 
-  if (snapshotQuery.loading && !snapshot)
+  if (isFirstLoad)
     return (
-      <div className="gg-root" style={{ padding: 16 }}>
-        <style>{CSS}</style>Loading commit graph...
-      </div>
+      <ThemeProvider presetName={presetName}>
+        <div className="gg-root" style={{ display: "flex", height: "100%", minHeight: 620 }}>
+          <div style={{ width: 220, flex: "0 0 220px", borderRight: "1px solid var(--gg-border)", background: "var(--gg-panel)" }} />
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <div style={{ height: 36, borderBottom: "1px solid var(--gg-border)", background: "var(--gg-panel)" }} />
+            <div style={{ padding: 8, display: "grid", gap: 6 }}>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="gg-skeleton-row"
+                  style={{ height: 20, borderRadius: "var(--gg-radius)", background: "var(--gg-hover)", opacity: 0.5 }}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      </ThemeProvider>
     );
 
   if (snapshotQuery.error && !snapshot)
     return (
-      <div className="gg-root" style={{ padding: 16 }}>
-        <style>{CSS}</style>
-        <span style={{ color: "var(--gg-red)" }}>{snapshotQuery.error.message}</span>
-      </div>
+      <ThemeProvider presetName={presetName}>
+        <div className="gg-root" style={{ padding: 16 }}>
+          <span style={{ color: "var(--gg-red)" }}>{snapshotQuery.error.message}</span>
+        </div>
+      </ThemeProvider>
     );
 
-  const status = statusQuery.data;
   if (!snapshot?.path || (status && (!status.configured || !status.healthy))) {
     return (
-      <Welcome
-        companyId={companyId}
-        status={status ?? null}
-        onBound={() => {
-          statusQuery.refresh();
-          snapshotQuery.refresh();
-          branchesQuery.refresh();
-        }}
-      />
+      <ThemeProvider presetName={presetName}>
+        <Welcome
+          companyId={companyId}
+          status={status ?? null}
+          onBound={() => {
+            statusQuery.refresh();
+            snapshotQuery.refresh();
+            branchesQuery.refresh();
+          }}
+        />
+      </ThemeProvider>
     );
   }
 
   return (
-    <div className="gg-root" style={{ display: "flex", height: "100%", minHeight: 620 }}>
-      <style>{CSS}</style>
-
+    <ThemeProvider presetName={presetName}>
+    <div className="gg-root" data-gg-preset={presetName ?? "paperclip"} style={{ display: "flex", height: "100%", minHeight: 620 }}>
       <Sidebar
         snapshot={snapshot}
         ownerByBranch={ownerByBranch}
+        preset={preset}
         filter={sideFilter}
         onFilter={setSideFilter}
         selectedBranch={branch}
         onSelectBranch={setBranch}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
       />
 
       <div ref={tableRef} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -183,54 +290,73 @@ export function GraphPage({ context }: PluginPageProps) {
           <button className="gg-btn" style={{ whiteSpace: "nowrap", flexShrink: 0 }} disabled={busy} onClick={() => void run(() => fetchAction({ companyId }))}>
             {busy ? "Working" : "Fetch"}
           </button>
-          <button className="gg-btn" style={{ whiteSpace: "nowrap", flexShrink: 0 }} disabled={busy} onClick={() => void run(() => refreshOwnership({ companyId }))}>
-            Refresh ownership
-          </button>
-          <select className="gg-input" style={{ flexShrink: 0 }} value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
-            {LIMITS.map((n) => (
-              <option key={n} value={n}>
-                {n} commits
+          <select
+            className="gg-input"
+            style={{ flexShrink: 0, maxWidth: 160 }}
+            value={branch}
+            onChange={(e) => setBranch(e.target.value)}
+          >
+            <option value="">All branches</option>
+            {snapshot.refs.filter((r) => r.kind === "local").map((r) => (
+              <option key={r.name} value={r.name}>
+                {r.name}
               </option>
             ))}
           </select>
-          <label style={{ display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap", flexShrink: 0 }}>
-            <input
-              type="checkbox"
-              checked={firstParentOnly}
-              onChange={(e) => setFirstParentOnly(e.target.checked)}
-            />
-            first parent
-          </label>
           <input
             className="gg-input"
-            style={{ minWidth: 160, flex: 1 }}
+            style={{ minWidth: 140, flex: 1 }}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search subject, author, sha"
           />
-          <span className="gg-dim gg-ell gg-mono" style={{ marginLeft: "auto" }} title={snapshot.path}>
+          <span className="gg-dim gg-ell gg-mono" style={{ marginLeft: "auto", maxWidth: 260 }} title={snapshot.path}>
             {snapshot.path}
           </span>
           <span
-            className="gg-badge"
+            aria-label={snapshot.healthy ? "healthy" : `${snapshot.problems.length} problems`}
             title={snapshot.problems.join("\n") || "No problems reported"}
-            style={{ color: snapshot.healthy ? "var(--gg-green)" : "var(--gg-red)", whiteSpace: "nowrap", flexShrink: 0 }}
-          >
-            {snapshot.healthy ? "healthy" : `${snapshot.problems.length} problems`}
-          </span>
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: snapshot.healthy ? okColor : "var(--gg-red)",
+              flexShrink: 0,
+            }}
+          />
           <span className="gg-dim" style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
-            fetched {snapshot.fetchedAt ? relativeDate(snapshot.fetchedAt) : "never"}
+            {snapshot.fetchedAt ? relativeDate(snapshot.fetchedAt) : "never fetched"}
           </span>
+          {status?.github && !status.github.ok && (
+            <GithubChip companyId={companyId} github={status.github} amber />
+          )}
+          <button
+            className="gg-btn"
+            aria-expanded={settingsOpen ? "true" : "false"}
+            style={{ flexShrink: 0 }}
+            onClick={() => setSettingsOpen((o) => !o)}
+          >
+            {"⋯"}
+          </button>
         </div>
 
-        {status?.config && (
-          <SettingsBar
+        {settingsOpen && (
+          <SettingsStrip
             companyId={companyId}
-            config={status.config}
-            github={status.github}
+            limit={limit}
+            onLimit={setLimit}
+            firstParentOnly={firstParentOnly}
+            onFirstParentOnly={setFirstParentOnly}
+            busy={busy}
+            onRefreshOwnership={() => void run(() => refreshOwnership({ companyId }))}
+            config={status?.config}
+            github={status?.github}
             onSaved={() => statusQuery.refresh()}
+            theme={presetName}
+            onThemeChange={(theme) => setThemeOverride(theme)}
           />
         )}
+
 
         {actionError && (
           <div style={{ color: "var(--gg-red)", padding: "4px 8px" }}>{actionError}</div>
@@ -257,11 +383,12 @@ export function GraphPage({ context }: PluginPageProps) {
         </div>
 
         <div
-          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+          ref={scrollElRef}
+          onScroll={handleScroll}
           style={{ flex: 1, minHeight: 200, height: VIEWPORT_HEIGHT, overflow: "auto" }}
         >
-          <div style={{ height: rows.length * ROW_HEIGHT, position: "relative" }}>
-            <div style={{ position: "absolute", top: start * ROW_HEIGHT, left: 0, right: 0 }}>
+          <div style={{ height: rows.length * rowHeight, position: "relative" }}>
+            <div style={{ position: "absolute", top: start * rowHeight, left: 0, right: 0 }}>
               {visible.map((commit, i) => (
                 <Row
                   key={commit.sha}
@@ -276,6 +403,9 @@ export function GraphPage({ context }: PluginPageProps) {
                   prUrlByNumber={prUrlByNumber}
                   selected={commit.sha === selected}
                   onSelect={() => setSelected(commit.sha)}
+                  preset={preset}
+                  agentLaneMap={agentLaneMap}
+                  isNew={newShas.has(commit.sha)}
                 />
               ))}
             </div>
@@ -283,6 +413,16 @@ export function GraphPage({ context }: PluginPageProps) {
           {rows.length === 0 && (
             <div className="gg-dim" style={{ padding: 16 }}>
               No commit matches this filter.
+            </div>
+          )}
+          {isLoadingMore && !filtering && (
+            <div className="gg-dim" style={{ padding: 8, textAlign: "center", fontSize: 12 }}>
+              Loading more...
+            </div>
+          )}
+          {endReached && !filtering && rows.length > 0 && (
+            <div className="gg-dim" style={{ padding: 8, textAlign: "center", fontSize: 12 }}>
+              End of history
             </div>
           )}
         </div>
@@ -297,26 +437,63 @@ export function GraphPage({ context }: PluginPageProps) {
         )}
       </div>
     </div>
+    </ThemeProvider>
   );
 }
 
-function SettingsBar({
+function SettingsStrip({
   companyId,
+  limit,
+  onLimit,
+  firstParentOnly,
+  onFirstParentOnly,
+  busy,
+  onRefreshOwnership,
   config,
   github,
   onSaved,
+  theme,
+  onThemeChange,
 }: {
   companyId: string;
-  config: { effective: PluginSettings; saved: boolean };
+  limit: number;
+  onLimit: (n: number) => void;
+  firstParentOnly: boolean;
+  onFirstParentOnly: (v: boolean) => void;
+  busy: boolean;
+  onRefreshOwnership: () => void;
+  config?: { effective: PluginSettings; saved: boolean };
   github?: StatusGithub;
   onSaved: () => void;
+  theme?: string;
+  onThemeChange: (theme: string) => void;
 }) {
   const hostNavigation = useHostNavigation();
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const { githubRepo, fetchIntervalMinutes, commitLimit } = config.effective;
+  const [savingTheme, setSavingTheme] = useState(false);
+
+  async function saveTheme(next: string) {
+    onThemeChange(next); // optimistic: re-render before the round trip completes
+    setSavingTheme(true);
+    setSaveError(null);
+    try {
+      const response = await fetch(`/api/plugins/${PLUGIN_MANIFEST_ID}/config`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ companyId, configJson: { theme: next } }),
+      });
+      if (!response.ok) throw new Error(`Save failed (${response.status})`);
+      onSaved();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingTheme(false);
+    }
+  }
 
   async function saveDefaults() {
+    if (!config) return;
     setSaving(true);
     setSaveError(null);
     try {
@@ -339,24 +516,58 @@ function SettingsBar({
     <div
       style={{
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
         gap: 8,
-        padding: "4px 8px",
+        padding: "6px 8px",
         borderBottom: "1px solid var(--gg-border)",
         background: "var(--gg-panel)",
         fontSize: 12,
       }}
     >
-      <span className="gg-dim gg-ell" style={{ maxWidth: 220 }} title={githubRepo || "auto-detected from origin"}>
-        {githubRepo || "repo: auto-detected"}
-      </span>
-      <span className="gg-dim">fetch every {fetchIntervalMinutes}m</span>
-      <span className="gg-dim">{commitLimit} commit cap</span>
-      {!config.saved && <span className="gg-badge">Defaults (not saved)</span>}
-      {github && <GithubChip companyId={companyId} github={github} />}
-      <button className="gg-btn" disabled={saving} onClick={() => void saveDefaults()}>
-        {saving ? "Saving..." : "Save defaults"}
+      <select className="gg-input" value={limit} onChange={(e) => onLimit(Number(e.target.value))}>
+        {LIMITS.map((n) => (
+          <option key={n} value={n}>
+            {n} per page
+          </option>
+        ))}
+      </select>
+      <label style={{ display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap" }}>
+        <input type="checkbox" checked={firstParentOnly} onChange={(e) => onFirstParentOnly(e.target.checked)} />
+        first parent
+      </label>
+      <button className="gg-btn" disabled={busy} onClick={onRefreshOwnership}>
+        Refresh ownership
       </button>
+      <label style={{ display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap" }}>
+        Theme
+        <select
+          className="gg-input"
+          disabled={savingTheme}
+          value={theme ?? "paperclip"}
+          onChange={(e) => void saveTheme(e.target.value)}
+        >
+          {THEME_PRESETS.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+      </label>
+      {config && (
+        <>
+          <span className="gg-dim gg-ell" style={{ maxWidth: 220 }} title={config.effective.githubRepo || "auto-detected from origin"}>
+            {config.effective.githubRepo || "repo: auto-detected"}
+          </span>
+          <span className="gg-dim">fetch every {config.effective.fetchIntervalMinutes}m</span>
+          <span className="gg-dim">{config.effective.commitLimit} commit cap</span>
+          {!config.saved && <span className="gg-badge">Defaults (not saved)</span>}
+          <button className="gg-btn" disabled={saving} onClick={() => void saveDefaults()}>
+            {saving ? "Saving..." : "Save defaults"}
+          </button>
+        </>
+      )}
+      {github?.ok && <GithubChip companyId={companyId} github={github} />}
       <a
         className="gg-link"
         {...hostNavigation.linkProps(`/settings/plugins/${PLUGIN_MANIFEST_ID}`)}
@@ -372,17 +583,23 @@ function SettingsBar({
 function Sidebar({
   snapshot,
   ownerByBranch,
+  preset,
   filter,
   onFilter,
   selectedBranch,
   onSelectBranch,
+  collapsed,
+  onToggleCollapsed,
 }: {
   snapshot: RepoSnapshot;
   ownerByBranch: Map<string, BranchOwnership>;
+  preset: ThemePresetConfig;
   filter: string;
   onFilter: (v: string) => void;
   selectedBranch: string;
   onSelectBranch: (v: string) => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({
     local: true,
@@ -411,11 +628,32 @@ function Sidebar({
     );
   }
 
+  if (collapsed) {
+    return (
+      <div
+        style={{
+          flex: "0 0 28px",
+          width: 28,
+          borderRight: "1px solid var(--gg-border)",
+          background: "var(--gg-panel)",
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "center",
+          paddingTop: 8,
+        }}
+      >
+        <button className="gg-btn" title="Show branches" onClick={onToggleCollapsed}>
+          <Chevron open={false} />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
-        width: 268,
-        flex: "0 0 268px",
+        width: 220,
+        flex: "0 0 220px",
         borderRight: "1px solid var(--gg-border)",
         background: "var(--gg-panel)",
         display: "flex",
@@ -423,7 +661,7 @@ function Sidebar({
         overflow: "auto",
       }}
     >
-      <div style={{ padding: 8 }}>
+      <div style={{ padding: 8, display: "flex", gap: 6 }}>
         <input
           className="gg-input"
           style={{ width: "100%" }}
@@ -431,6 +669,9 @@ function Sidebar({
           onChange={(e) => onFilter(e.target.value)}
           placeholder="Filter branches, tags, worktrees"
         />
+        <button className="gg-btn" title="Collapse" onClick={onToggleCollapsed} style={{ flexShrink: 0 }}>
+          <Chevron open={true} />
+        </button>
       </div>
       {selectedBranch && (
         <button className="gg-btn" style={{ margin: "0 8px 8px" }} onClick={() => onSelectBranch("")}>
@@ -450,6 +691,7 @@ function Sidebar({
             bold={r.isCurrent}
             selected={selectedBranch === r.name}
             owner={ownerByBranch.get(r.name)}
+            preset={preset}
             onClick={() => onSelectBranch(selectedBranch === r.name ? "" : r.name)}
           />
         )),
@@ -465,6 +707,7 @@ function Sidebar({
             label={r.name}
             selected={selectedBranch === r.name}
             owner={ownerByBranch.get(r.name.replace(/^[^/]+\//, ""))}
+            preset={preset}
             onClick={() => onSelectBranch(selectedBranch === r.name ? "" : r.name)}
           />
         )),
@@ -502,6 +745,7 @@ function SideRow({
   bold,
   selected,
   owner,
+  preset,
   onClick,
 }: {
   icon: React.ReactNode;
@@ -510,6 +754,7 @@ function SideRow({
   bold?: boolean;
   selected?: boolean;
   owner?: BranchOwnership;
+  preset?: ThemePresetConfig;
   onClick?: () => void;
 }) {
   return (
@@ -520,11 +765,26 @@ function SideRow({
       onClick={onClick}
       disabled={!onClick}
     >
-      <span style={{ display: "flex" }}>{icon}</span>
+      <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
+        {icon}
+        {owner?.agentId && preset && (
+          <span
+            aria-hidden="true"
+            title={owner.agentName ?? undefined}
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: colorForAgent(owner.agentId, preset),
+              flexShrink: 0,
+            }}
+          />
+        )}
+      </span>
       <span className="gg-ell" style={{ fontWeight: bold ? 700 : 400 }}>
         {label}
       </span>
-      {owner ? <OwnerPill owner={owner} compact /> : <span />}
+      {owner ? <OwnerPill owner={owner} variant="compact" preset={preset ?? resolvePreset(undefined)} /> : <span />}
     </button>
   );
 }
@@ -541,6 +801,9 @@ function Row({
   prUrlByNumber,
   selected,
   onSelect,
+  preset,
+  agentLaneMap,
+  isNew,
 }: {
   commit: GitCommit;
   row: number;
@@ -553,34 +816,37 @@ function Row({
   prUrlByNumber: Map<number, string>;
   selected: boolean;
   onSelect: () => void;
+  preset: ThemePresetConfig;
+  agentLaneMap: Map<string, number>;
+  isNew: boolean;
 }) {
   const owner = ownerFor(commit, ownerByBranch);
   return (
     <div
-      className="gg-row"
+      className={isNew ? "gg-row gg-new" : "gg-row"}
       aria-selected={selected ? "true" : "false"}
-      style={{ gridTemplateColumns: GRID(graphColWidth) }}
+      style={{ gridTemplateColumns: GRID(graphColWidth), height: preset.rowHeight }}
       onClick={onSelect}
     >
-      <div style={{ height: ROW_HEIGHT, width: graphColWidth, overflow: "hidden" }}>
+      <div style={{ height: preset.rowHeight, width: graphColWidth, overflow: "hidden" }}>
         {layout && (
           <div style={{ transform: `translateX(${-graphScrollLeft}px)` }}>
-            <GraphCell layout={layout} row={row} width={graphWidth} />
+            <GraphCell layout={layout} row={row} width={graphWidth} preset={preset} agentLaneMap={agentLaneMap} />
           </div>
         )}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, paddingLeft: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, overflow: "hidden", flexShrink: 0 }}>
           {commit.isHead && <RefBadge name="HEAD" kind="head" />}
           {commit.refs.map((name) => (
             <RefBadge key={name} name={name} kind={refByName.get(name)?.kind ?? "local"} />
           ))}
-          {owner && <OwnerPill owner={owner} />}
         </div>
         <Subject text={commit.subject} prUrlByNumber={prUrlByNumber} />
+        {owner && <OwnerPill owner={owner} variant="row" preset={preset} />}
       </div>
       <div className="gg-ell gg-dim">{commit.author}</div>
-      <div className="gg-mono gg-dim gg-ell">{commit.sha.slice(0, 10)}</div>
+      <div className="gg-mono gg-dim gg-ell">{commit.sha.slice(0, 7)}</div>
       <div className="gg-dim gg-ell" style={{ textAlign: "right" }}>{relativeDate(commit.date)}</div>
     </div>
   );
@@ -594,7 +860,7 @@ function ownerFor(commit: GitCommit, ownerByBranch: Map<string, BranchOwnership>
   return undefined;
 }
 
-// "fix:", "feature(ui)!:" and similar lead the subject in bold, the way SourceGit renders them.
+// "fix:", "feature(ui)!:" and similar conventional-commit prefixes lead the subject in bold.
 const CONVENTIONAL = /^([a-z]+(?:\([^)]*\))?!?):\s+/i;
 const TOKEN = /([A-Z][A-Z0-9]+-\d+|#\d+)/g;
 
@@ -630,65 +896,65 @@ function Subject({ text, prUrlByNumber }: { text: string; prUrlByNumber: Map<num
   );
 }
 
-function GraphCell({ layout, row, width }: { layout: GraphLayout; row: number; width: number }) {
-  const top = row * ROW_HEIGHT;
+function GraphCell({
+  layout,
+  row,
+  width,
+  preset,
+  agentLaneMap,
+}: {
+  layout: GraphLayout;
+  row: number;
+  width: number;
+  preset: ThemePresetConfig;
+  agentLaneMap: Map<string, number>;
+}) {
+  const rowHeight = preset.rowHeight;
+  const top = row * rowHeight;
   const lo = row - 1;
-  const hi = row + 2;
-  const inWindow = (y: number) => y >= lo && y <= hi;
+  const hi = row + 1;
+  const segments = layout.segments.filter((s) => s.row >= lo && s.row <= hi);
+  const dots = layout.dots.filter((d) => d.row >= lo && d.row <= hi);
+  const dotRadius = preset.dotStyle === "small" ? 2 : preset.dotStyle === "filled" ? 3 : 2.5;
+
+  // Segments carry only a lane-index color; approximate the agent hue via the row's own commit.
+  const colorForIndex = (idx: number, sha?: string) =>
+    sha ? laneColorFor({ sha } as GitCommit, agentLaneMap, idx, preset) : preset.lanePalette[idx % preset.lanePalette.length]!;
 
   return (
-    <svg width={width} height={ROW_HEIGHT} style={{ display: "block", overflow: "hidden" }}>
+    <svg width={width} height={rowHeight} style={{ display: "block", overflow: "hidden" }}>
       <g transform={`translate(0, ${-top})`}>
-        {layout.paths.map((p, i) => {
-          // Path points are monotonic in y, so first and last bound the whole polyline.
-          const first = p.points[0]!.y;
-          const last = p.points[p.points.length - 1]!.y;
-          if (p.points.length < 2 || last < lo || first > hi) return null;
+        {segments.map((s, i) => {
+          const color = colorForIndex(s.color, layout.dots.find((d) => d.row === s.row)?.sha);
+          const y0 = s.row * rowHeight;
+          const y1 = y0 + rowHeight;
+          const x0 = laneX(s.lane);
+          const x1 = laneX(s.toLane);
+          if (x0 === x1) return <line key={i} x1={x0} y1={y0} x2={x1} y2={y1} stroke={color} strokeWidth={2} />;
           return (
-            <polyline
-              key={i}
-              fill="none"
-              strokeWidth={2}
-              stroke={GRAPH_COLORS[p.color % GRAPH_COLORS.length]}
-              points={p.points.map((pt) => `${pt.x},${pt.y * ROW_HEIGHT}`).join(" ")}
-            />
-          );
-        })}
-        {layout.links.map((l, i) =>
-          inWindow(l.start.y) || inWindow(l.end.y) ? (
             <path
               key={i}
               fill="none"
               strokeWidth={2}
-              stroke={GRAPH_COLORS[l.color % GRAPH_COLORS.length]}
-              d={`M ${l.start.x} ${l.start.y * ROW_HEIGHT} Q ${l.control.x} ${l.control.y * ROW_HEIGHT} ${l.end.x} ${l.end.y * ROW_HEIGHT}`}
+              stroke={color}
+              d={`M ${x0} ${y0} Q ${x0} ${y1} ${(x0 + x1) / 2} ${y1} L ${x1} ${y1}`}
             />
-          ) : null,
-        )}
-        {layout.dots.map((d) => {
-          if (!inWindow(d.center.y)) return null;
-          const color = GRAPH_COLORS[d.color % GRAPH_COLORS.length];
-          const cy = d.center.y * ROW_HEIGHT;
+          );
+        })}
+        {dots.map((d) => {
+          const color = colorForIndex(d.color, d.sha);
+          const cx = laneX(d.lane);
+          const cy = d.row * rowHeight + rowHeight / 2;
           if (d.type === "merge")
-            return (
-              <circle
-                key={d.sha}
-                cx={d.center.x}
-                cy={cy}
-                r={3.5}
-                fill="var(--gg-bg)"
-                stroke={color}
-                strokeWidth={2}
-              />
-            );
-          if (d.type === "head")
+            return <circle key={d.sha} cx={cx} cy={cy} r={dotRadius + 1} fill="var(--gg-panel)" stroke={color} strokeWidth={2} />;
+          if (d.type === "head" && preset.dotStyle === "ring")
             return (
               <g key={d.sha}>
-                <circle cx={d.center.x} cy={cy} r={6} fill="none" stroke={color} strokeWidth={1.5} opacity={0.55} />
-                <circle cx={d.center.x} cy={cy} r={3.5} fill={color} />
+                <circle cx={cx} cy={cy} r={dotRadius + 2.5} fill="none" stroke={color} strokeWidth={1.5} opacity={0.55} />
+                <circle cx={cx} cy={cy} r={dotRadius} fill={color} />
               </g>
             );
-          return <circle key={d.sha} cx={d.center.x} cy={cy} r={2.5} fill={color} />;
+          return <circle key={d.sha} cx={cx} cy={cy} r={dotRadius} fill={color} />;
         })}
       </g>
     </svg>
@@ -697,8 +963,7 @@ function GraphCell({ layout, row, width }: { layout: GraphLayout; row: number; w
 
 function RefBadge({ name, kind }: { name: string; kind: GitRef["kind"] }) {
   const icon = kind === "remote" ? <CloudIcon /> : kind === "tag" ? <TagIcon /> : <CheckIcon />;
-  const color =
-    kind === "head" ? "var(--gg-green)" : kind === "tag" ? "var(--gg-fg-dim)" : "var(--gg-fg)";
+  const color = kind === "head" ? okColor : kind === "tag" ? "var(--gg-fg-dim)" : "var(--gg-fg)";
   return (
     <span className="gg-badge gg-mono" title={`${kind}: ${name}`} style={{ color }}>
       {icon}
@@ -707,31 +972,45 @@ function RefBadge({ name, kind }: { name: string; kind: GitRef["kind"] }) {
   );
 }
 
-function OwnerPill({ owner, compact }: { owner: BranchOwnership; compact?: boolean }) {
+// compact: sidebar row, issue key only, full context in the title tooltip.
+// row: right-aligned "KEY · Agent · PR #n" chip after a commit's subject.
+function OwnerPill({
+  owner,
+  variant,
+  preset,
+}: {
+  owner: BranchOwnership;
+  variant: "compact" | "row";
+  preset: ThemePresetConfig;
+}) {
   const hostNavigation = useHostNavigation();
   const pr = owner.pr;
   const stateColor = pr ? (prStateVar[pr.state] ?? "var(--gg-fg-dim)") : "var(--gg-fg-dim)";
+  const agentColor = owner.agentId ? colorForAgent(owner.agentId, preset) : null;
   const hover = ownershipTooltip(owner);
+  const key = owner.issueIdentifier;
+
+  if (variant === "compact") {
+    return (
+      <span className="gg-chip gg-mono" title={hover}>
+        {key ? (
+          <a className="gg-link" {...hostNavigation.linkProps(`/issues/${key}`)} title={owner.agentName ?? undefined}>
+            {key}
+          </a>
+        ) : (
+          <span className="gg-dim" title={owner.agentName ?? undefined}>
+            {owner.agentName ?? "owned"}
+          </span>
+        )}
+      </span>
+    );
+  }
 
   return (
-    <span className="gg-badge" title={hover} style={{ borderColor: stateColor }}>
-      {!compact && owner.agentName && <span className="gg-ell">{owner.agentName}</span>}
-      {owner.issueIdentifier && (
-        <a className="gg-link gg-mono" {...hostNavigation.linkProps(`/issues/${owner.issueIdentifier}`)}>
-          {owner.issueIdentifier}
-        </a>
-      )}
-      {pr && (
-        <a
-          className="gg-mono"
-          href={pr.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ color: stateColor, fontWeight: 600, textDecoration: "none" }}
-        >
-          #{pr.number}
-        </a>
-      )}
+    <span className="gg-chip gg-dim" title={hover} style={{ marginLeft: "auto", flexShrink: 0 }}>
+      {agentColor && <span style={{ width: 6, height: 6, borderRadius: "50%", background: agentColor, flexShrink: 0 }} />}
+      {pr && <span style={{ width: 6, height: 6, borderRadius: "50%", background: stateColor, flexShrink: 0 }} />}
+      {[key, owner.agentName, pr ? `PR #${pr.number}` : null].filter(Boolean).join(" · ") || "unowned"}
     </span>
   );
 }
@@ -767,12 +1046,96 @@ function DetailPanel({
   const owner = ownerFor(commit, ownerByBranch);
   const pr = owner?.pr;
 
+  const pairs = [
+    {
+      label: "Author",
+      value: (
+        <>
+          {commit.author} <span className="gg-dim">{commit.email}</span>
+          <span className="gg-dim"> · {shortDate(commit.date)}</span>
+        </>
+      ),
+    },
+    { label: "SHA", value: <span className="gg-mono">{commit.sha}</span> },
+    {
+      label: "Parents",
+      value: <span className="gg-mono gg-dim">{commit.parents.join("  ") || "none (root commit)"}</span>,
+    },
+    {
+      label: "Refs",
+      value: (
+        <span style={{ display: "inline-flex", gap: 5, flexWrap: "wrap" }}>
+          {commit.refs.length === 0 && <span className="gg-dim">none</span>}
+          {commit.refs.map((name) => (
+            <RefBadge key={name} name={name} kind={refByName.get(name)?.kind ?? "local"} />
+          ))}
+        </span>
+      ),
+    },
+    { label: "Message", value: <span style={{ whiteSpace: "pre-wrap" }}>{commit.subject}</span> },
+  ];
+
+  const ownershipPairs = !owner
+    ? [{ label: "Ownership", value: <span className="gg-dim">No agent, issue or PR linked to a branch here.</span> }]
+    : [
+        {
+          label: "Issue",
+          value: owner.issueIdentifier ? (
+            <>
+              <a className="gg-link gg-mono" {...hostNavigation.linkProps(`/issues/${owner.issueIdentifier}`)}>
+                {owner.issueIdentifier}
+              </a>{" "}
+              {owner.issueTitle} {owner.issueStatus && <span className="gg-dim">({owner.issueStatus})</span>}
+            </>
+          ) : (
+            <span className="gg-dim">no issue</span>
+          ),
+        },
+        {
+          label: "Agent",
+          value: (
+            <>
+              {owner.agentName ?? "unassigned"}{" "}
+              {owner.agentStatus && <span className="gg-dim">({owner.agentStatus})</span>}{" "}
+              <span className="gg-dim gg-mono">on {owner.branch}</span>
+            </>
+          ),
+        },
+        ...(pr
+          ? [
+              {
+                label: "Pull request",
+                value: (
+                  <>
+                    <a
+                      className="gg-link gg-mono"
+                      href={pr.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: prStateVar[pr.state] ?? "var(--gg-link)" }}
+                    >
+                      #{pr.number}
+                    </a>{" "}
+                    {pr.title} <span className="gg-dim">({pr.state})</span>
+                    {pr.reviewers.length > 0 && <span className="gg-dim"> · reviewers {pr.reviewers.join(", ")}</span>}
+                    {pr.checks && <span className="gg-dim"> · checks {pr.checks}</span>}
+                  </>
+                ),
+              },
+            ]
+          : []),
+        {
+          label: "Sources",
+          value: <span className="gg-dim">{owner.sources.map((s) => `${s.kind} (${s.detail})`).join("  ·  ") || "none"}</span>,
+        },
+      ];
+
   return (
     <div
       style={{
         borderTop: "1px solid var(--gg-border)",
         background: "var(--gg-panel)",
-        maxHeight: 280,
+        height: 240,
         overflow: "auto",
       }}
     >
@@ -793,96 +1156,16 @@ function DetailPanel({
         </button>
       </div>
 
-      <dl
-        style={{
-          display: "grid",
-          gridTemplateColumns: "96px minmax(0, 1fr)",
-          gap: "6px 14px",
-          margin: 0,
-          padding: 12,
-        }}
-      >
-        <Field label="Author">
-          {commit.author} <span className="gg-dim">{commit.email}</span>
-          <span className="gg-dim"> · {shortDate(commit.date)}</span>
-        </Field>
-        <Field label="SHA">
-          <span className="gg-mono">{commit.sha}</span>
-        </Field>
-        <Field label="Parents">
-          <span className="gg-mono gg-dim">{commit.parents.join("  ") || "none (root commit)"}</span>
-        </Field>
-        <Field label="Refs">
-          <span style={{ display: "inline-flex", gap: 5, flexWrap: "wrap" }}>
-            {commit.refs.length === 0 && <span className="gg-dim">none</span>}
-            {commit.refs.map((name) => (
-              <RefBadge key={name} name={name} kind={refByName.get(name)?.kind ?? "local"} />
-            ))}
-          </span>
-        </Field>
-        <Field label="Message">
-          <span style={{ whiteSpace: "pre-wrap" }}>{commit.subject}</span>
-        </Field>
-        <Field label="Ownership">
-          {!owner ? (
-            <span className="gg-dim">No agent, issue or PR is linked to a branch on this commit.</span>
-          ) : (
-            <div style={{ display: "grid", gap: 4 }}>
-              <div>
-                {owner.issueIdentifier ? (
-                  <a className="gg-link gg-mono" {...hostNavigation.linkProps(`/issues/${owner.issueIdentifier}`)}>
-                    {owner.issueIdentifier}
-                  </a>
-                ) : (
-                  <span className="gg-dim">no issue</span>
-                )}{" "}
-                {owner.issueTitle} {owner.issueStatus && <span className="gg-dim">({owner.issueStatus})</span>}
-              </div>
-              <div>
-                {owner.agentName ?? "unassigned"}{" "}
-                {owner.agentStatus && <span className="gg-dim">({owner.agentStatus})</span>}{" "}
-                <span className="gg-dim gg-mono">on {owner.branch}</span>
-              </div>
-              {pr && (
-                <div>
-                  <a
-                    className="gg-link gg-mono"
-                    href={pr.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: prStateVar[pr.state] ?? "var(--gg-link)" }}
-                  >
-                    #{pr.number}
-                  </a>{" "}
-                  {pr.title} <span className="gg-dim">({pr.state})</span>
-                  {pr.reviewers.length > 0 && (
-                    <span className="gg-dim"> · reviewers {pr.reviewers.join(", ")}</span>
-                  )}
-                  {pr.checks && <span className="gg-dim"> · checks {pr.checks}</span>}
-                </div>
-              )}
-              <div className="gg-dim">
-                {owner.sources.map((s) => `${s.kind} (${s.detail})`).join("  ·  ") || "no sources recorded"}
-              </div>
-            </div>
-          )}
-        </Field>
-      </dl>
+      <div style={{ padding: 12, display: "grid", gap: 12 }}>
+        <KeyValueList pairs={pairs} />
+        <div>
+          <div className="gg-dim" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
+            Ownership
+          </div>
+          <KeyValueList pairs={ownershipPairs} />
+        </div>
+      </div>
     </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <>
-      <dt
-        className="gg-dim"
-        style={{ textAlign: "right", textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}
-      >
-        {label}
-      </dt>
-      <dd style={{ margin: 0, minWidth: 0 }}>{children}</dd>
-    </>
   );
 }
 
@@ -902,7 +1185,7 @@ function Chevron({ open }: { open: boolean }) {
 
 function CheckIcon() {
   return (
-    <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true" style={{ color: "var(--gg-green)" }}>
+    <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true" style={{ color: okColor }}>
       <circle cx="6" cy="6" r="5.2" fill="currentColor" />
       <path d="M3.4 6.2 L5.2 8 L8.6 4.4" fill="none" stroke="var(--gg-panel)" strokeWidth="1.5" />
     </svg>

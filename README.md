@@ -1,8 +1,6 @@
 # paperclip-git-graph
 
-A SourceGit-style commit graph rendered inside [Paperclip](https://github.com/paperclipai/paperclip), the AI-agent company orchestrator. For every branch it shows who is working on it: the Paperclip issue and assigned agent, the GitHub pull request, and any branch names mentioned in issue run logs.
-
-The graph layout is a TypeScript port of SourceGit's `CommitGraph.cs` ([sourcegit-scm/sourcegit](https://github.com/sourcegit-scm/sourcegit), MIT). Credit and license text for that part are in NOTICE.
+A commit graph rendered inside [Paperclip](https://github.com/paperclipai/paperclip), the AI-agent company orchestrator. For every branch it shows who is working on it: the Paperclip issue and assigned agent, the GitHub pull request, and any branch names mentioned in issue run logs.
 
 ## What
 
@@ -97,10 +95,6 @@ npm run typecheck
 ## Security note
 
 The worker runs `git` in the bound folder, and the plugin UI executes same-origin JavaScript inside Paperclip. Install this plugin only from a source you trust. The GitHub token, if set, is stored as a Paperclip secret reference and is never written to logs.
-
-## Credits
-
-Commit graph layout ported from SourceGit's `CommitGraph.cs` ([sourcegit-scm/sourcegit](https://github.com/sourcegit-scm/sourcegit)), Copyright (c) 2020 leo, MIT License.
 
 ## License
 

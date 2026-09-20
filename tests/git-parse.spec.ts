@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCommits, parseRefs, parseTrack, parseWorktrees, shortRefName } from "../src/worker/git.js";
+import { parseAheadBehindOutput, parseCommits, parseRefs, parseTrack, parseWorktrees, shortRefName } from "../src/worker/git.js";
 
 const U = "\u001f";
 const R = "\u001e";
@@ -67,6 +67,24 @@ describe("parseWorktrees", () => {
       { path: "G:/MyProject/repo", branch: "develop", sha: "aaa111" },
       { path: "G:/MyProject/repo-wt", branch: null, sha: "bbb222" }
     ]);
+  });
+});
+
+describe("parseAheadBehindOutput", () => {
+  it("parses ref, sha and ahead-behind counts from for-each-ref output", () => {
+    const stdout = [
+      `develop${U}aaa111${U}0 0`,
+      `agent/MYS-1-x${U}bbb222${U}2 5`,
+      `origin/agent/MYS-1-x${U}bbb222${U}2 5`
+    ].join("\n");
+    const map = parseAheadBehindOutput(stdout);
+    expect(map.get("develop")).toEqual({ ahead: 0, behind: 0 });
+    expect(map.get("agent/MYS-1-x")).toEqual({ ahead: 2, behind: 5 });
+    expect(map.get("origin/agent/MYS-1-x")).toEqual({ ahead: 2, behind: 5 });
+  });
+
+  it("ignores blank lines and lines missing the ahead-behind field", () => {
+    expect(parseAheadBehindOutput(`\nfoo${U}bbb222\n`)).toEqual(new Map());
   });
 });
 

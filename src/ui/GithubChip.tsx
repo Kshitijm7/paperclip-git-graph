@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { StatusGithub } from "../shared/types.js";
+import { useTheme } from "../theme/index.js";
 
 const PLUGIN_MANIFEST_ID = "paperclip-git-graph";
 
@@ -12,18 +13,29 @@ async function saveGithubAuth(companyId: string, githubAuth: string) {
   if (!response.ok) throw new Error(`Save failed (${response.status})`);
 }
 
-export function GithubChip({ companyId, github }: { companyId: string; github: StatusGithub }) {
+export function GithubChip({
+  companyId,
+  github,
+  amber,
+}: {
+  companyId: string;
+  github: StatusGithub;
+  amber?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { preset } = useTheme();
+  const btnRadius = preset.chipStyle === "pill" ? 999 : preset.chipStyle === "rounded" ? 8 : undefined;
 
-  const label =
-    github.mode === "gh-cli" && github.ok
+  const label = amber
+    ? "Connect GitHub"
+    : github.mode === "gh-cli" && github.ok
       ? `GitHub: ${github.login ?? "gh CLI"} via gh`
       : github.mode === "secret" && github.ok
         ? "GitHub: token"
         : "GitHub: not connected";
-  const color = github.ok ? "var(--gg-green)" : "var(--gg-fg-dim)";
+  const color = amber ? undefined : github.ok ? "var(--gg-fg)" : "var(--gg-fg-dim)";
 
   async function useGhCli() {
     setSaving(true);
@@ -41,25 +53,24 @@ export function GithubChip({ companyId, github }: { companyId: string; github: S
 
   return (
     <div style={{ position: "relative", display: "inline-block" }}>
-      <button className="gg-btn" style={{ color }} onClick={() => setOpen((o) => !o)}>
+      <button
+        className={amber ? "gg-btn gg-btn-amber" : "gg-btn"}
+        style={{ color, borderRadius: btnRadius }}
+        onClick={() => setOpen((o) => !o)}
+      >
         {label}
       </button>
       {open && (
         <div
-          className="gg-panel"
+          className="gg-popover"
           style={{
-            position: "absolute",
             top: "100%",
             left: 0,
-            zIndex: 10,
             marginTop: 4,
             padding: 12,
             width: 300,
             display: "grid",
             gap: 8,
-            border: "1px solid var(--gg-border)",
-            borderRadius: 6,
-            background: "var(--gg-panel)"
           }}
         >
           <div style={{ fontSize: 12 }}>

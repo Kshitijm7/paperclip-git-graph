@@ -1,5 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { DEFAULT_BRANCH_PATTERN, DEFAULT_COMMIT_LIMIT, DEFAULT_FETCH_INTERVAL_MINUTES } from "../manifest.js";
+import { THEME_PRESETS } from "../shared/types.js";
 import type { PluginSettings } from "../shared/types.js";
 
 export type { PluginSettings };
@@ -10,7 +11,9 @@ export const DEFAULTS: PluginSettings = {
   commitLimit: DEFAULT_COMMIT_LIMIT,
   branchPattern: DEFAULT_BRANCH_PATTERN,
   githubToken: null,
-  githubAuth: "auto"
+  githubAuth: "auto",
+  theme: "paperclip",
+  trunk: "develop"
 };
 
 const GITHUB_AUTH_MODES = new Set(["auto", "secret", "gh-cli", "none"]);
@@ -54,6 +57,8 @@ export async function resolveConfig(ctx: PluginContext, companyId: string): Prom
     commitLimit: Number.isFinite(commitLimit) && commitLimit > 0 ? commitLimit : DEFAULTS.commitLimit,
     branchPattern: resolvedBranchPattern,
     githubToken: raw.githubToken ?? DEFAULTS.githubToken,
-    githubAuth: typeof raw.githubAuth === "string" && GITHUB_AUTH_MODES.has(raw.githubAuth) ? (raw.githubAuth as PluginSettings["githubAuth"]) : DEFAULTS.githubAuth
+    githubAuth: typeof raw.githubAuth === "string" && GITHUB_AUTH_MODES.has(raw.githubAuth) ? (raw.githubAuth as PluginSettings["githubAuth"]) : DEFAULTS.githubAuth,
+    theme: typeof raw.theme === "string" && (THEME_PRESETS as string[]).includes(raw.theme) ? (raw.theme as PluginSettings["theme"]) : DEFAULTS.theme,
+    trunk: typeof raw.trunk === "string" && raw.trunk.trim() ? raw.trunk.trim() : DEFAULTS.trunk
   };
 }

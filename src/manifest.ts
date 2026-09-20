@@ -1,5 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { FOLDER_KEY } from "./shared/types.js";
+import { FOLDER_KEY, THEME_PRESETS } from "./shared/types.js";
 
 export const DEFAULT_BRANCH_PATTERN = "^agent/(?<issue>[A-Z]+-\\d+)-";
 export const DEFAULT_COMMIT_LIMIT = 400;
@@ -28,8 +28,18 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.page.register",
     "ui.sidebar.register",
     "ui.dashboardWidget.register",
-    "events.subscribe"
+    "events.subscribe",
+    "database.namespace.migrate",
+    "database.namespace.read",
+    "database.namespace.write",
+    "activity.log.write",
+    "metrics.write",
+    "agent.tools.register"
   ],
+  database: {
+    namespaceSlug: "git_graph",
+    migrationsDir: "migrations"
+  },
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"
@@ -84,6 +94,19 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Branch ownership pattern",
         description: "Regex with a named group 'issue' that maps a branch name to an issue identifier.",
         default: DEFAULT_BRANCH_PATTERN
+      },
+      theme: {
+        type: "string",
+        title: "Theme",
+        description: "Visual preset for the graph and activity views.",
+        enum: THEME_PRESETS,
+        default: "paperclip"
+      },
+      trunk: {
+        type: "string",
+        title: "Trunk branch",
+        description: "The branch other branches are compared against for ahead/behind and merge status.",
+        default: "develop"
       }
     }
   },

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import type { GitCommit, GitRef, GitWorktree } from "../shared/types.js";
 
 const run = promisify(execFile);
@@ -86,7 +87,8 @@ export async function readCommits(
   cwd: string,
   limit: number,
   firstParentOnly = false,
-  branch?: string
+  branch?: string,
+  skip = 0
 ): Promise<GitCommit[]> {
   const args = [
     "log",
@@ -95,10 +97,20 @@ export async function readCommits(
     `--format=%H%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%D%x1e`,
     `--max-count=${limit}`
   ];
+  if (skip > 0) args.push(`--skip=${skip}`);
   if (firstParentOnly) args.push("--first-parent");
   if (branch) args.push(branch);
   else args.push("--all");
   return parseCommits(await git(cwd, args, 60000));
+}
+
+export async function countCommits(cwd: string, firstParentOnly = false, branch?: string): Promise<number> {
+  const args = ["rev-list", "--count"];
+  if (firstParentOnly) args.push("--first-parent");
+  if (branch) args.push(branch);
+  else args.push("--all");
+  const out = (await git(cwd, args, 30000)).trim();
+  return Number(out) || 0;
 }
 
 export function parseCommits(stdout: string): GitCommit[] {
@@ -166,6 +178,60 @@ export async function readHead(cwd: string): Promise<{ sha: string; branch: stri
   const sha = (await git(cwd, ["rev-parse", "HEAD"])).trim();
   const branch = (await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
   return { sha, branch: branch === "HEAD" ? null : branch };
+}
+
+export async function readRefsHash(cwd: string): Promise<string> {
+  const out = await git(cwd, ["for-each-ref", "--format=%(refname) %(objectname)"]);
+  const lines = out.split("\n").map((line) => line.trim()).filter(Boolean).sort();
+  const hash = createHash("sha1");
+  hash.update(lines.join("\n"));
+  return hash.digest("hex");
+}
+
+/** Parses `for-each-ref --format=%(refname:short)%x1f%(objectname)%x1f%(ahead-behind:<trunk>)` output into a ref -> counts map. */
+export function parseAheadBehindOutput(output: string): Map<string, { ahead: number; behind: number }> {
+  const map = new Map<string, { ahead: number; behind: number }>();
+  for (const line of output.split("\n")) {
+    if (!line.trim()) continue;
+    const [ref, , aheadBehind] = line.split("\x1f");
+    if (!ref || !aheadBehind) continue;
+    const [ahead, behind] = aheadBehind.trim().split(/\s+/).map((n) => Number(n) || 0);
+    map.set(ref, { ahead: ahead ?? 0, behind: behind ?? 0 });
+  }
+  return map;
+}
+
+/** One for-each-ref call replacing a per-branch rev-list loop. */
+export async function readAheadBehindMap(cwd: string, trunk: string): Promise<Map<string, { ahead: number; behind: number }>> {
+  try {
+    const out = await git(cwd, [
+      "for-each-ref",
+      `--format=%(refname:short)%x1f%(objectname)%x1f%(ahead-behind:${trunk})`,
+      "refs/heads",
+      "refs/remotes"
+    ]);
+    return parseAheadBehindOutput(out);
+  } catch {
+    return new Map();
+  }
+}
+
+/** Replaces a per-branch merge-base --is-ancestor loop with two branch --merged listings. */
+export async function readMergedBranches(cwd: string, trunk: string): Promise<Set<string>> {
+  const merged = new Set<string>();
+  try {
+    const local = await git(cwd, ["branch", "--merged", trunk, "--format=%(refname:short)"]);
+    for (const line of local.split("\n").map((l) => l.trim()).filter(Boolean)) merged.add(line);
+  } catch {
+    // trunk may not exist yet; leave merged as-is
+  }
+  try {
+    const remote = await git(cwd, ["branch", "-r", "--merged", trunk, "--format=%(refname:short)"]);
+    for (const line of remote.split("\n").map((l) => l.trim()).filter(Boolean)) merged.add(line);
+  } catch {
+    // same as above
+  }
+  return merged;
 }
 
 export async function readOriginUrl(cwd: string): Promise<string | null> {

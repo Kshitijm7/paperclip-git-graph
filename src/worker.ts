@@ -1,9 +1,9 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import manifest, { DEFAULT_FETCH_INTERVAL_MINUTES } from "./manifest.js";
-import { ACTION_KEYS, DATA_KEYS, FOLDER_KEY } from "./shared/types.js";
-import type { BranchOwnership, GraphQuery, PullRequestInfo, RepoSnapshot } from "./shared/types.js";
-import { fetchAll, gitVersion, readCommits, readHead, readRefs, readWorktrees } from "./worker/git.js";
+import { ACTION_KEYS, DATA_KEYS, DATA_KEYS_V2, FOLDER_KEY } from "./shared/types.js";
+import type { BranchOwnership, CachedSnapshotMeta, GraphQuery, PullRequestInfo, RepoSnapshot } from "./shared/types.js";
+import { countCommits, fetchAll, gitVersion, readCommits, readHead, readRefs, readRefsHash, readWorktrees } from "./worker/git.js";
 import { browseDirectory, listRoots, listWorkspaceCandidates, pushRecent, getRecent } from "./worker/fs.js";
 import { DEFAULTS, resolveConfig, type PluginSettings } from "./worker/config.js";
 import { detectGhCli, resolveGithubToken } from "./worker/github-auth.js";
@@ -17,14 +17,26 @@ import {
   type CommentLike,
   type IssueLike
 } from "./worker/ownership.js";
+import {
+  persistOwnership,
+  persistSnapshot,
+  readCommitWindow,
+  readPersistedRefs,
+  readPersistedSnapshot,
+  readSnapshotMetaLight
+} from "./worker/cache.js";
+import { diffPrEvents, diffRefEvents, emitRepoChanged, appendEvents, registerLiveUpdates } from "./worker/live.js";
+import { buildActivity, invalidateActivityCache } from "./worker/activity.js";
 
 const CACHE_TTL_MS = 20_000;
 const REMOTE_TTL_MS = 5 * 60_000;
 const GH_STATUS_TTL_MS = 5 * 60_000;
-const COMMENT_ISSUE_CAP = 50;
+const COMMENT_ISSUE_CAP = 30;
+const OWNERSHIP_STALE_MS = 5 * 60_000;
+const ACTIVE_STATUS_PATTERN = /in.?progress|in.?review/i;
 
 let context: PluginContext | null = null;
-const snapshotCache = new Map<string, { at: number; key: string; snapshot: RepoSnapshot }>();
+const snapshotCache = new Map<string, { at: number; snapshot: RepoSnapshot; meta: CachedSnapshotMeta | null }>();
 let ghStatusCache: { at: number; status: Awaited<ReturnType<typeof detectGhCli>> } | null = null;
 
 async function cachedGhStatus() {
@@ -104,8 +116,10 @@ async function loadCommentHits(ctx: PluginContext, companyId: string, issues: Is
   const cached = (await ctx.state.get(key)) as { at?: number; hits?: Record<string, { issueId: string; commentId: string }> } | null;
   if (!force && cached?.at && Date.now() - cached.at < REMOTE_TTL_MS) return new Map(Object.entries(cached.hits ?? {}));
 
+  const active = issues.filter((issue) => ACTIVE_STATUS_PATTERN.test(issue.status));
+  const scanTargets = active.length > 0 ? active : issues;
   const comments: CommentLike[] = [];
-  for (const issue of issues.slice(0, COMMENT_ISSUE_CAP)) {
+  for (const issue of scanTargets.slice(0, COMMENT_ISSUE_CAP)) {
     try {
       const list = await ctx.issues.listComments(issue.id, companyId);
       for (const comment of list) comments.push({ id: comment.id, issueId: comment.issueId, body: comment.body ?? "" });
@@ -141,7 +155,7 @@ async function loadOwnership(
   const pullRequests = await loadPullRequests(ctx, companyId, cwd, cfg, force);
   const commentHits = await loadCommentHits(ctx, companyId, issues, force);
 
-  return buildOwnership({
+  const ownership = buildOwnership({
     refs,
     issues,
     agents,
@@ -149,22 +163,72 @@ async function loadOwnership(
     commentHits,
     branchPattern: cfg.branchPattern
   });
+  await syncBranchEntities(ctx, companyId, ownership);
+  return ownership;
 }
 
-async function buildSnapshot(ctx: PluginContext, query: GraphQuery): Promise<RepoSnapshot> {
-  const companyId = query.companyId;
-  const cfg = await resolveConfig(ctx, companyId);
-  const limit = query.limit ?? cfg.commitLimit;
-  const cacheKey = JSON.stringify([limit, query.firstParentOnly ?? false, query.branch ?? null]);
-  const cached = snapshotCache.get(companyId);
-  if (cached && cached.key === cacheKey && Date.now() - cached.at < CACHE_TTL_MS) return cached.snapshot;
+async function syncBranchEntities(ctx: PluginContext, companyId: string, ownership: BranchOwnership[]): Promise<void> {
+  for (const entry of ownership) {
+    await ctx.entities.upsert({
+      entityType: "git-branch",
+      scopeKind: "company",
+      scopeId: companyId,
+      externalId: entry.branch,
+      title: entry.branch,
+      status: entry.pr?.state ?? "no-pr",
+      data: entry as unknown as Record<string, unknown>
+    });
+  }
+}
 
+function isDefaultShape(query: GraphQuery): boolean {
+  return !query.branch && !query.firstParentOnly;
+}
+
+function snapshotCacheKey(companyId: string, limit: number, offset: number, firstParentOnly: boolean, branch: string | null): string {
+  return `${companyId}|${JSON.stringify([limit, offset, firstParentOnly, branch])}`;
+}
+
+function invalidateSnapshotCache(companyId: string): void {
+  const prefix = `${companyId}|`;
+  for (const key of snapshotCache.keys()) {
+    if (key.startsWith(prefix)) snapshotCache.delete(key);
+  }
+}
+
+function isOwnershipStale(ownershipRefreshedAt: string | null | undefined): boolean {
+  if (!ownershipRefreshedAt) return true;
+  return Date.now() - new Date(ownershipRefreshedAt).getTime() > OWNERSHIP_STALE_MS;
+}
+
+/** Heavy path: PR lookup, comment scan, entity upsert. Persists ownership only, never rebuilds commits/refs. */
+async function refreshOwnershipInternal(ctx: PluginContext, companyId: string): Promise<BranchOwnership[]> {
   const { status, path } = await repoPath(ctx, companyId);
+  if (!path || !status.healthy) return [];
+  const cfg = await resolveConfig(ctx, companyId);
+  const refs = await readRefs(path);
+  const ownership = await loadOwnership(ctx, companyId, path, refs, cfg, true);
+  await persistOwnership(ctx, companyId, ownership, new Date().toISOString());
+  invalidateSnapshotCache(companyId);
+  invalidateActivityCache(companyId);
+  return ownership;
+}
+
+function scheduleOwnershipRefreshIfStale(ctx: PluginContext, companyId: string, ownershipRefreshedAt: string | null | undefined): void {
+  if (!isOwnershipStale(ownershipRefreshedAt)) return;
+  void refreshOwnershipInternal(ctx, companyId).catch((error) =>
+    ctx.logger.warn("Lazy ownership refresh failed", { companyId, message: (error as Error).message })
+  );
+}
+
+/** Non-default query shape (a specific branch or first-parent-only): reads git directly, never touches the shared commits/refs tables. */
+async function buildScopedSnapshot(ctx: PluginContext, query: GraphQuery, cfg: PluginSettings, limit: number, offset: number, path: string): Promise<RepoSnapshot> {
+  const companyId = query.companyId;
   const base: RepoSnapshot = {
     folderKey: FOLDER_KEY,
     path,
-    healthy: status.healthy,
-    problems: status.problems.map((problem) => problem.message),
+    healthy: true,
+    problems: [],
     fetchedAt: await fetchedAt(ctx, companyId),
     generatedAt: new Date().toISOString(),
     head: null,
@@ -174,25 +238,222 @@ async function buildSnapshot(ctx: PluginContext, query: GraphQuery): Promise<Rep
     ownership: [],
     truncated: false
   };
-  if (!path || !status.healthy) return base;
-
   try {
-    const refs = await readRefs(path);
-    const commits = await readCommits(path, limit, query.firstParentOnly ?? false, query.branch);
-    const snapshot: RepoSnapshot = {
+    const firstParentOnly = query.firstParentOnly ?? false;
+    const [refs, commits, total, existing] = await Promise.all([
+      readRefs(path),
+      readCommits(path, limit, firstParentOnly, query.branch, offset),
+      countCommits(path, firstParentOnly, query.branch),
+      readSnapshotMetaLight(ctx, companyId)
+    ]);
+    scheduleOwnershipRefreshIfStale(ctx, companyId, existing?.extra.ownershipRefreshedAt);
+    return {
       ...base,
       head: await readHead(path),
       refs,
       commits,
+      total,
       worktrees: await readWorktrees(path),
-      ownership: await loadOwnership(ctx, companyId, path, refs, cfg),
-      truncated: commits.length >= limit
+      ownership: existing?.extra.ownership ?? [],
+      truncated: offset + commits.length < total
     };
-    snapshotCache.set(companyId, { at: Date.now(), key: cacheKey, snapshot });
-    return snapshot;
   } catch (error) {
     return { ...base, healthy: false, problems: [...base.problems, (error as Error).message] };
   }
+}
+
+/** Default-shape query: DB commits/refs table on a refsHash hit, a full git rebuild otherwise. Never recomputes ownership. */
+async function loadDefaultSnapshot(
+  ctx: PluginContext,
+  companyId: string,
+  cfg: PluginSettings,
+  offset: number,
+  limit: number,
+  path: string
+): Promise<{ snapshot: RepoSnapshot; meta: CachedSnapshotMeta; cached: boolean }> {
+  const refsHash = await readRefsHash(path);
+  const existing = await readSnapshotMetaLight(ctx, companyId);
+  const previousOwnership = existing?.extra.ownership ?? [];
+  const ownershipRefreshedAt = existing?.extra.ownershipRefreshedAt ?? null;
+
+  if (existing && existing.meta.refsHash === refsHash) {
+    const storedCount = existing.meta.commitCount;
+    if (offset + limit > storedCount && storedCount >= cfg.commitLimit) {
+      const neededLimit = Math.min(offset + limit, 5000);
+      const [refs, commits, head, worktrees] = await Promise.all([
+        readRefs(path),
+        readCommits(path, neededLimit),
+        readHead(path),
+        readWorktrees(path)
+      ]);
+      const rebuilt: RepoSnapshot = {
+        folderKey: FOLDER_KEY,
+        path,
+        healthy: true,
+        problems: [],
+        fetchedAt: existing.extra.fetchedAt ?? null,
+        generatedAt: new Date().toISOString(),
+        head,
+        refs,
+        commits,
+        worktrees,
+        ownership: previousOwnership,
+        truncated: commits.length >= neededLimit
+      };
+      const meta = await persistSnapshot(ctx, companyId, rebuilt, refsHash, neededLimit, ownershipRefreshedAt);
+      scheduleOwnershipRefreshIfStale(ctx, companyId, ownershipRefreshedAt);
+      return {
+        snapshot: { ...rebuilt, commits: rebuilt.commits.slice(offset, offset + limit), total: meta.commitCount },
+        meta,
+        cached: false
+      };
+    }
+
+    const [commits, refs] = await Promise.all([readCommitWindow(ctx, companyId, offset, limit), readPersistedRefs(ctx, companyId)]);
+    const snapshot: RepoSnapshot = {
+      folderKey: existing.extra.folderKey ?? FOLDER_KEY,
+      path: existing.extra.path ?? path,
+      healthy: existing.extra.healthy ?? true,
+      problems: existing.extra.problems ?? [],
+      fetchedAt: existing.extra.fetchedAt ?? null,
+      generatedAt: existing.meta.generatedAt,
+      head: existing.meta.headSha ? { sha: existing.meta.headSha, branch: refs.find((ref) => ref.isCurrent)?.name ?? null } : null,
+      refs,
+      commits,
+      total: storedCount,
+      worktrees: existing.extra.worktrees ?? [],
+      ownership: previousOwnership,
+      truncated: existing.extra.truncated ?? false
+    };
+    scheduleOwnershipRefreshIfStale(ctx, companyId, ownershipRefreshedAt);
+    return { snapshot, meta: existing.meta, cached: true };
+  }
+
+  const rebuildLimit = Math.min(Math.max(offset + limit, cfg.commitLimit), 5000);
+  const [refs, commits, head, worktrees] = await Promise.all([
+    readRefs(path),
+    readCommits(path, rebuildLimit),
+    readHead(path),
+    readWorktrees(path)
+  ]);
+  const rebuilt: RepoSnapshot = {
+    folderKey: FOLDER_KEY,
+    path,
+    healthy: true,
+    problems: [],
+    fetchedAt: await fetchedAt(ctx, companyId),
+    generatedAt: new Date().toISOString(),
+    head,
+    refs,
+    commits,
+    worktrees,
+    ownership: previousOwnership,
+    truncated: commits.length >= rebuildLimit
+  };
+  const meta = await persistSnapshot(ctx, companyId, rebuilt, refsHash, rebuildLimit, ownershipRefreshedAt);
+  scheduleOwnershipRefreshIfStale(ctx, companyId, ownershipRefreshedAt);
+  return {
+    snapshot: { ...rebuilt, commits: rebuilt.commits.slice(offset, offset + limit), total: meta.commitCount },
+    meta,
+    cached: false
+  };
+}
+
+/** Fast path: memory cache -> DB-backed default snapshot (or scoped git read) -> notify. Never runs PR/comment lookups. */
+async function loadSnapshot(
+  ctx: PluginContext,
+  query: GraphQuery,
+  force = false
+): Promise<{ snapshot: RepoSnapshot; meta: CachedSnapshotMeta | null; cached: boolean }> {
+  const companyId = query.companyId;
+  const cfg = await resolveConfig(ctx, companyId);
+  const limit = query.limit ?? cfg.commitLimit;
+  const offset = query.offset ?? 0;
+  const firstParentOnly = query.firstParentOnly ?? false;
+  const memKey = snapshotCacheKey(companyId, limit, offset, firstParentOnly, query.branch ?? null);
+
+  const memCached = snapshotCache.get(memKey);
+  if (!force && memCached && Date.now() - memCached.at < CACHE_TTL_MS) {
+    return { snapshot: memCached.snapshot, meta: memCached.meta, cached: true };
+  }
+
+  const { status, path } = await repoPath(ctx, companyId);
+  if (!path || !status.healthy) {
+    const snapshot: RepoSnapshot = {
+      folderKey: FOLDER_KEY,
+      path,
+      healthy: status.healthy,
+      problems: status.problems.map((problem) => problem.message),
+      fetchedAt: await fetchedAt(ctx, companyId),
+      generatedAt: new Date().toISOString(),
+      head: null,
+      refs: [],
+      commits: [],
+      worktrees: [],
+      ownership: [],
+      truncated: false
+    };
+    return { snapshot, meta: null, cached: false };
+  }
+
+  if (isDefaultShape(query)) {
+    try {
+      const result = await loadDefaultSnapshot(ctx, companyId, cfg, offset, limit, path);
+      snapshotCache.set(memKey, { at: Date.now(), snapshot: result.snapshot, meta: result.meta });
+      return result;
+    } catch (error) {
+      const message = (error as Error).message.split("\n")[0].slice(0, 300);
+      ctx.logger.warn("Default snapshot read failed, falling back to a scoped rebuild", { companyId, message });
+    }
+  }
+
+  const snapshot = await buildScopedSnapshot(ctx, query, cfg, limit, offset, path);
+  const meta: CachedSnapshotMeta | null = snapshot.healthy
+    ? { headSha: snapshot.head?.sha ?? null, refsHash: "", generatedAt: snapshot.generatedAt, commitCount: snapshot.commits.length }
+    : null;
+  snapshotCache.set(memKey, { at: Date.now(), snapshot, meta });
+  return { snapshot, meta, cached: false };
+}
+
+async function buildSnapshot(ctx: PluginContext, query: GraphQuery): Promise<RepoSnapshot> {
+  return (await loadSnapshot(ctx, query)).snapshot;
+}
+
+/** Rebuilds, persists, diffs refs/PRs against the previous persisted copy, appends events, and notifies the UI. */
+async function refreshAndNotify(ctx: PluginContext, companyId: string, reason: "run" | "fetch" | "config"): Promise<void> {
+  const { status, path } = await repoPath(ctx, companyId);
+  if (!path || !status.healthy) return;
+  const previous = await readPersistedSnapshot(ctx, companyId);
+  const { snapshot: rebuilt, meta: rebuiltMeta } = await loadSnapshot(ctx, { companyId }, true);
+  if (!rebuiltMeta) return;
+  const ownership = await refreshOwnershipInternal(ctx, companyId);
+  const snapshot: RepoSnapshot = { ...rebuilt, ownership };
+  const meta: CachedSnapshotMeta = { ...rebuiltMeta, ownershipRefreshedAt: new Date().toISOString() };
+
+  const oldRefs = new Map((previous?.snapshot.refs ?? []).map((ref) => [ref.name, ref.sha]));
+  const newRefs = new Map(snapshot.refs.map((ref) => [ref.name, ref.sha]));
+  const oldPrs = (previous?.snapshot.ownership ?? []).map((entry) => entry.pr).filter(Boolean) as PullRequestInfo[];
+  const newPrs = snapshot.ownership.map((entry) => entry.pr).filter(Boolean) as PullRequestInfo[];
+  const newEvents = [...diffRefEvents(oldRefs, newRefs), ...diffPrEvents(oldPrs, newPrs)];
+  await appendEvents(ctx, companyId, newEvents);
+
+  for (const event of newEvents) {
+    if (event.kind === "pr.merged") {
+      await ctx.activity.log({ companyId, message: event.summary, entityType: "git-branch", metadata: { prNumber: event.prNumber } });
+    }
+  }
+
+  const openPrs = newPrs.filter((pr) => pr.state === "open" || pr.state === "draft").length;
+  await ctx.metrics.write("git_graph.open_prs", openPrs, { companyId });
+  await ctx.metrics.write("git_graph.branches", newRefs.size, { companyId });
+  await ctx.metrics.write("git_graph.commits_24h", commitsInLast24h(snapshot.commits), { companyId });
+
+  emitRepoChanged(ctx, companyId, reason, meta);
+}
+
+function commitsInLast24h(commits: RepoSnapshot["commits"]): number {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  return commits.filter((commit) => new Date(commit.date).getTime() >= cutoff).length;
 }
 
 async function runFetch(ctx: PluginContext, companyId: string) {
@@ -205,7 +466,12 @@ async function runFetch(ctx: PluginContext, companyId: string) {
   }
   const at = new Date().toISOString();
   await ctx.state.set({ scopeKind: "company", scopeId: companyId, stateKey: "fetchedAt" }, at);
-  snapshotCache.delete(companyId);
+  invalidateSnapshotCache(companyId);
+  await appendEvents(ctx, companyId, [
+    { id: `fetch:${companyId}:${at}`, at, kind: "fetch", summary: "Fetched all remotes" }
+  ]);
+  await ctx.activity.log({ companyId, message: "Fetched all remotes", entityType: "git-repo" });
+  await refreshAndNotify(ctx, companyId, "fetch");
   return { ok: true, fetchedAt: at };
 }
 
@@ -250,9 +516,37 @@ const plugin = definePlugin({
       return buildSnapshot(ctx, {
         companyId,
         limit: typeof params.limit === "number" ? params.limit : undefined,
+        offset: typeof params.offset === "number" ? params.offset : undefined,
         firstParentOnly: params.firstParentOnly === true,
         branch: typeof params.branch === "string" ? params.branch : undefined
       });
+    });
+
+    ctx.data.register(DATA_KEYS_V2.meta, async (params) => {
+      const companyId = requireCompanyId(params);
+      const { meta, cached } = await loadSnapshot(ctx, { companyId });
+      return { ...(meta ?? { headSha: null, refsHash: "", generatedAt: new Date().toISOString(), commitCount: 0 }), cached };
+    });
+
+    ctx.data.register(DATA_KEYS_V2.activity, async (params) => {
+      const companyId = requireCompanyId(params);
+      const { status, path } = await repoPath(ctx, companyId);
+      if (!path || !status.healthy) {
+        return { trunk: (await resolveConfig(ctx, companyId)).trunk, agents: [], issues: [], events: [], generatedAt: new Date().toISOString() };
+      }
+      const cfg = await resolveConfig(ctx, companyId);
+      const { snapshot } = await loadSnapshot(ctx, { companyId });
+      const agents = await ctx.agents.list({ companyId, limit: 200 });
+      return buildActivity(
+        ctx,
+        companyId,
+        path,
+        cfg.trunk,
+        snapshot.refs,
+        snapshot.commits,
+        snapshot.ownership,
+        agents.map((agent) => ({ id: agent.id, name: agent.name, status: agent.status }))
+      );
     });
 
     ctx.data.register(DATA_KEYS.candidates, async (params) => {
@@ -281,18 +575,42 @@ const plugin = definePlugin({
         access: "read",
         requiredDirectories: [".git"]
       });
-      snapshotCache.delete(companyId);
-      if (status.healthy) await pushRecent(ctx, companyId, status.realPath ?? status.path ?? path.trim());
+      invalidateSnapshotCache(companyId);
+      if (status.healthy) {
+        await pushRecent(ctx, companyId, status.realPath ?? status.path ?? path.trim());
+        await ctx.activity.log({ companyId, message: `Bound git repository at ${status.realPath ?? path.trim()}`, entityType: "git-repo" });
+      }
       return status;
     });
+
+    ctx.tools.register(
+      "git_graph_branches",
+      {
+        displayName: "Git Graph Branches",
+        description: "List repository branches with their owning agent, issue and PR state.",
+        parametersSchema: {
+          type: "object",
+          properties: { companyId: { type: "string", description: "Company UUID. Defaults to the run's own company." } }
+        }
+      },
+      async (params, runCtx) => {
+        const companyId = typeof (params as Record<string, unknown>)?.companyId === "string"
+          ? (params as Record<string, string>).companyId
+          : runCtx.companyId;
+        const { status, path } = await repoPath(ctx, companyId);
+        if (!path || !status.healthy) return { content: "No repository is bound for this company.", data: [] };
+        const cfg = await resolveConfig(ctx, companyId);
+        const ownership = await loadOwnership(ctx, companyId, path, await readRefs(path), cfg);
+        const lines = ownership.map((entry) => `${entry.branch}\t${entry.agentName ?? "-"}\t${entry.pr?.state ?? "no-pr"}`);
+        return { content: ["branch\tagent\tpr", ...lines].join("\n"), data: ownership };
+      }
+    );
 
     ctx.actions.register(ACTION_KEYS.refreshOwnership, async (params) => {
       const companyId = requireCompanyId(params);
       const { status, path } = await repoPath(ctx, companyId);
       if (!path || !status.healthy) return { ok: false, ownership: [] as BranchOwnership[] };
-      snapshotCache.delete(companyId);
-      const cfg = await resolveConfig(ctx, companyId);
-      const ownership = await loadOwnership(ctx, companyId, path, await readRefs(path), cfg, true);
+      const ownership = await refreshOwnershipInternal(ctx, companyId);
       return { ok: true, ownership };
     });
 
@@ -301,13 +619,18 @@ const plugin = definePlugin({
         await runFetch(ctx, company.id);
       }
     });
+
+    registerLiveUpdates(ctx, { onRefsChanged: (companyId) => refreshAndNotify(ctx, companyId, "run") });
   },
 
   multiCompanyConfig: true,
 
   async onConfigChanged(_newConfig, changeContext) {
     const companyId = changeContext?.companyId;
-    if (companyId) snapshotCache.delete(companyId);
+    if (!companyId || !context) return;
+    invalidateSnapshotCache(companyId);
+    invalidateActivityCache(companyId);
+    await refreshAndNotify(context, companyId, "config");
   },
 
   async onHealth() {

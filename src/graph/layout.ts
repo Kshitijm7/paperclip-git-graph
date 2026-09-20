@@ -1,36 +1,26 @@
-// Port of SourceGit Models/CommitGraph.cs (MIT). Highlighting modes are dropped; every
-// element carries `highlighted: true` so the field stays available for later.
 import type { GitCommit } from "../shared/types.js";
-
-export interface Point {
-  x: number;
-  y: number;
-}
-
-export interface GraphPath {
-  points: Point[];
-  color: number;
-}
-
-export interface GraphLink {
-  start: Point;
-  control: Point;
-  end: Point;
-  color: number;
-}
 
 export type DotType = "default" | "head" | "merge";
 
+// A connector drawn across one row: from lane at the row's top edge to toLane at its bottom edge.
+// lane === toLane is a straight vertical pass-through; lane !== toLane is a diagonal merge/branch.
+export interface GraphSegment {
+  row: number;
+  lane: number;
+  toLane: number;
+  color: number;
+}
+
 export interface GraphDot {
-  center: Point;
+  row: number;
+  lane: number;
   color: number;
   type: DotType;
   sha: string;
 }
 
 export interface GraphLayout {
-  paths: GraphPath[];
-  links: GraphLink[];
+  segments: GraphSegment[];
   dots: GraphDot[];
   rowOf: Record<string, number>;
   laneWidth: number;
@@ -41,44 +31,32 @@ export interface LayoutOptions {
   headSha?: string;
 }
 
-// laneWidth tracks offsetX as lanes are laid out, but link start/control/end points can sit at an
-// offsetX recorded on an earlier row; this walks every point directly so nothing is undercounted.
-export function maxGraphX(layout: Pick<GraphLayout, "paths" | "links" | "dots">): number {
-  let max = 0;
-  for (const p of layout.paths) for (const pt of p.points) if (pt.x > max) max = pt.x;
-  for (const l of layout.links) {
-    if (l.start.x > max) max = l.start.x;
-    if (l.control.x > max) max = l.control.x;
-    if (l.end.x > max) max = l.end.x;
-  }
-  for (const d of layout.dots) if (d.center.x > max) max = d.center.x;
-  return max;
+export const UNIT_WIDTH = 12;
+export const LANE_MARGIN = 8;
+
+export function laneX(lane: number): number {
+  return LANE_MARGIN + lane * UNIT_WIDTH;
 }
 
-export const UNIT_WIDTH = 12;
-export const UNIT_HEIGHT = 1;
+export function maxGraphX(layout: Pick<GraphLayout, "segments" | "dots">): number {
+  let maxLane = 0;
+  for (const d of layout.dots) if (d.lane > maxLane) maxLane = d.lane;
+  for (const s of layout.segments) {
+    if (s.lane > maxLane) maxLane = s.lane;
+    if (s.toLane > maxLane) maxLane = s.toLane;
+  }
+  return laneX(maxLane) + LANE_MARGIN;
+}
 
-// s_defaultPenColors (orange, forest green, turquoise, olive, magenta, red, khaki, lime,
-// royal blue, teal), darkened where the raw colour washes out on white.
-export const GRAPH_COLORS = [
-  "#e8952b",
-  "#3f9142",
-  "#1fb6c9",
-  "#8a8a23",
-  "#c24bc2",
-  "#d93025",
-  "#b89b3a",
-  "#5aa626",
-  "#4169e1",
-  "#1f8a8a",
-];
+// Consumed by index; matches the 8 lane hues defined in ui/theme.ts.
+export const GRAPH_COLORS_COUNT = 8;
 
 class ColorPicker {
   private queue: number[] = [];
 
   next(): number {
     if (this.queue.length === 0) {
-      for (let i = 0; i < GRAPH_COLORS.length; i++) this.queue.push(i);
+      for (let i = 0; i < GRAPH_COLORS_COUNT; i++) this.queue.push(i);
     }
     return this.queue.shift()!;
   }
@@ -88,174 +66,86 @@ class ColorPicker {
   }
 }
 
-class PathHelper {
-  path: GraphPath;
-  next: string;
-  lastX: number;
-  private lastY: number;
-  private endY = 0;
-
-  constructor(next: string, color: number, start: Point, to?: Point) {
-    this.next = next;
-    this.path = { color, points: [start] };
-    if (to) {
-      this.path.points.push(to);
-      this.lastX = to.x;
-      this.lastY = to.y;
-    } else {
-      this.lastX = start.x;
-      this.lastY = start.y;
-    }
-  }
-
-  private add(x: number, y: number): void {
-    if (this.endY < y) {
-      this.path.points.push({ x, y });
-      this.endY = y;
-    }
-  }
-
-  pass(x: number, y: number, halfHeight: number): void {
-    if (x > this.lastX) {
-      this.add(this.lastX, this.lastY);
-      this.add(x, y - halfHeight);
-    } else if (x < this.lastX) {
-      this.add(this.lastX, y - halfHeight);
-      y += halfHeight;
-      this.add(x, y);
-    }
-    this.lastX = x;
-    this.lastY = y;
-  }
-
-  goto(x: number, y: number, halfHeight: number): void {
-    if (x > this.lastX) {
-      this.add(this.lastX, this.lastY);
-      this.add(x, y - halfHeight);
-    } else if (x < this.lastX) {
-      let minY = y - halfHeight;
-      if (minY > this.lastY) minY -= halfHeight;
-      this.add(this.lastX, minY);
-      this.add(x, y);
-    }
-    this.lastX = x;
-    this.lastY = y;
-  }
-
-  end(x: number, y: number, halfHeight: number): void {
-    if (x > this.lastX) {
-      this.add(this.lastX, this.lastY);
-      this.add(x, y - halfHeight);
-    } else if (x < this.lastX) {
-      this.add(this.lastX, y - halfHeight);
-    }
-    this.add(x, y);
-    this.lastX = x;
-    this.lastY = y;
-  }
+function firstFreeSlot(lanes: (string | null)[]): number {
+  const idx = lanes.indexOf(null);
+  if (idx !== -1) return idx;
+  lanes.push(null);
+  return lanes.length - 1;
 }
 
 export function generateGraph(commits: GitCommit[], options: LayoutOptions = {}): GraphLayout {
-  const halfWidth = UNIT_WIDTH / 2;
-  const halfHeight = UNIT_HEIGHT / 2;
   const firstParentOnly = options.firstParentOnly ?? false;
 
-  const paths: GraphPath[] = [];
-  const links: GraphLink[] = [];
+  const segments: GraphSegment[] = [];
   const dots: GraphDot[] = [];
   const rowOf: Record<string, number> = {};
 
-  const unsolved: PathHelper[] = [];
+  const lanes: (string | null)[] = [];
+  const laneColors: number[] = [];
   const colorPicker = new ColorPicker();
-  let offsetY = -halfHeight;
-  let laneWidth = UNIT_WIDTH;
+  let maxLaneUsed = 0;
 
   commits.forEach((commit, row) => {
     rowOf[commit.sha] = row;
-    offsetY += UNIT_HEIGHT;
 
-    let major: PathHelper | null = null;
-    let offsetX = 4 - halfWidth;
-    const maxOffsetOld = unsolved.length > 0 ? unsolved[unsolved.length - 1]!.lastX : offsetX + UNIT_WIDTH;
-    const ended: PathHelper[] = [];
+    let laneIdx = lanes.indexOf(commit.sha);
+    if (laneIdx === -1) {
+      laneIdx = firstFreeSlot(lanes);
+      laneColors[laneIdx] = colorPicker.next();
+    }
+    const color = laneColors[laneIdx]!;
+    maxLaneUsed = Math.max(maxLaneUsed, laneIdx);
 
-    for (const l of unsolved) {
-      if (l.next === commit.sha) {
-        if (major === null) {
-          offsetX += UNIT_WIDTH;
-          major = l;
-          if (commit.parents.length > 0) {
-            major.next = commit.parents[0]!;
-            major.goto(offsetX, offsetY, halfHeight);
-          } else {
-            major.end(offsetX, offsetY, halfHeight);
-            ended.push(l);
-          }
-        } else {
-          l.end(major.lastX, offsetY, halfHeight);
-          ended.push(l);
-        }
-      } else {
-        offsetX += UNIT_WIDTH;
-        l.pass(offsetX, offsetY, halfHeight);
+    // Other lanes also waiting for this commit converge into it.
+    for (let i = 0; i < lanes.length; i++) {
+      if (i !== laneIdx && lanes[i] === commit.sha) {
+        segments.push({ row, lane: i, toLane: laneIdx, color: laneColors[i]! });
+        lanes[i] = null;
+        colorPicker.recycle(laneColors[i]!);
       }
     }
 
-    for (const l of ended) {
-      colorPicker.recycle(l.path.color);
-      unsolved.splice(unsolved.indexOf(l), 1);
-    }
-
-    if (major === null) {
-      offsetX += UNIT_WIDTH;
-      if (commit.parents.length > 0) {
-        major = new PathHelper(commit.parents[0]!, colorPicker.next(), { x: offsetX, y: offsetY });
-        unsolved.push(major);
-        paths.push(major.path);
+    // Unrelated active lanes just pass straight through this row.
+    for (let i = 0; i < lanes.length; i++) {
+      if (i !== laneIdx && lanes[i] !== null) {
+        segments.push({ row, lane: i, toLane: i, color: laneColors[i]! });
       }
     }
 
-    const position: Point = { x: major ? major.lastX : offsetX, y: offsetY };
-    const dotColor = major ? major.path.color : 0;
     const isHead = options.headSha ? commit.sha === options.headSha : commit.isHead;
     dots.push({
-      center: position,
-      color: dotColor,
+      row,
+      lane: laneIdx,
+      color,
       type: isHead ? "head" : commit.parents.length > 1 ? "merge" : "default",
       sha: commit.sha,
     });
 
+    if (commit.parents.length > 0) {
+      lanes[laneIdx] = commit.parents[0]!;
+      segments.push({ row, lane: laneIdx, toLane: laneIdx, color });
+    } else {
+      lanes[laneIdx] = null;
+      colorPicker.recycle(color);
+    }
+
     if (!firstParentOnly) {
       for (let j = 1; j < commit.parents.length; j++) {
-        const parentHash = commit.parents[j]!;
-        const parent = unsolved.find((x) => x.next === parentHash);
-        if (parent) {
-          links.push({
-            start: position,
-            end: { x: parent.lastX, y: offsetY + halfHeight },
-            control: { x: parent.lastX, y: position.y },
-            color: parent.path.color,
-          });
+        const parentSha = commit.parents[j]!;
+        const existingLane = lanes.indexOf(parentSha);
+        if (existingLane !== -1) {
+          segments.push({ row: row + 1, lane: laneIdx, toLane: existingLane, color: laneColors[existingLane]! });
         } else {
-          offsetX += UNIT_WIDTH;
-          const l = new PathHelper(parentHash, colorPicker.next(), position, {
-            x: offsetX,
-            y: position.y + halfHeight,
-          });
-          unsolved.push(l);
-          paths.push(l.path);
+          const newLane = firstFreeSlot(lanes);
+          laneColors[newLane] = colorPicker.next();
+          lanes[newLane] = parentSha;
+          maxLaneUsed = Math.max(maxLaneUsed, newLane);
+          segments.push({ row: row + 1, lane: laneIdx, toLane: newLane, color: laneColors[newLane]! });
         }
       }
     }
-
-    laneWidth = Math.max(laneWidth, Math.max(offsetX, maxOffsetOld) + halfWidth + 2);
   });
 
-  const endY = (commits.length - 0.5) * UNIT_HEIGHT;
-  unsolved.forEach((path, i) => {
-    if (path.path.points.length === 1 && Math.abs(path.path.points[0]!.y - endY) < 0.0001) return;
-    path.end((i + 0.5) * UNIT_WIDTH + 4, endY + halfHeight, halfHeight);
-  });
-
-  return { paths, links, dots, rowOf, laneWidth };
+  const laneWidth = laneX(maxLaneUsed) + LANE_MARGIN;
+  return { segments, dots, rowOf, laneWidth };
 }
