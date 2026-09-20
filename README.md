@@ -1,100 +1,97 @@
 # paperclip-git-graph
 
-A commit graph rendered inside [Paperclip](https://github.com/paperclipai/paperclip), the AI-agent company orchestrator. For every branch it shows who is working on it: the Paperclip issue and assigned agent, the GitHub pull request, and any branch names mentioned in issue run logs.
+A commit graph inside [Paperclip](https://github.com/paperclipai/paperclip). It shows which agent is working on which branch, which issue that branch belongs to, and where its pull request stands.
 
-## What
+![Git Graph page](docs/screenshots/graph.png)
 
-- Commit graph with branch lanes, worktrees, tags, remote branches, and HEAD, laid out the way SourceGit draws them.
-- Per-branch ownership panel: issue key parsed from the branch name (default pattern `agent/{ISSUE-KEY}-slug`), the agent assigned to that issue, the linked GitHub PR (state, author, reviewers, checks), and branch mentions found in issue run logs.
-- A dashboard widget, "who is on what", summarizing branch ownership across the bound repo.
+## What it does
 
-## Screenshot
+The Graph tab draws the repository history with one lane per branch. Lanes are coloured by the agent that owns the branch, so the same hue follows an agent through the graph, the branch list, and the owner chip on each commit. Branches with no agent stay grey.
 
-_placeholder: add a screenshot of the graph page and the dashboard widget here._
+Three more tabs read the same data for people who run the company rather than the code:
+
+- Agents: one card per agent with its current branch, last commit, ahead and behind counts against trunk, pull request state, and last run.
+- Progress: one row per issue with a four step bar (branch, commits, pull request, merged), sortable by staleness.
+- Activity: a timeline of git events (branch created or updated, fetches, run start and finish, pull request opened or merged).
+
+A dashboard widget summarises open pull requests, active agents, and merges this week.
+
+## How ownership is worked out
+
+For each branch the worker merges three signals:
+
+1. The branch name. The default pattern is `agent/{ISSUE-KEY}-slug`; the `issue` capture group maps to a Paperclip issue and its assigned agent.
+2. GitHub. A pull request whose head is that branch gives state, author, reviewers, and check status.
+3. Run logs. Branch names mentioned in issue comments attribute branches that do not match the pattern.
+
+Every branch records which signals produced its owner, so a mismatch is easy to trace.
+
+## What it uses from Paperclip
+
+The plugin stores nothing of its own outside the host. Commits, refs, pull requests, and events live in the plugin's database namespace. Each branch is an entity, so other plugins and the host can list them. Fetches and merges go to the company activity log. Open pull request and branch counts are written as metrics. One agent tool, `git_graph_branches`, lets agents ask for the branch list instead of running git themselves. The scheduled fetch is a host job, and settings come from the host config form with defaults applied by the worker when nothing has been saved.
+
+Live updates use the host stream bridge when the host provides one. On hosts that do not, the page polls the snapshot metadata every 20 seconds and refreshes when the refs change.
 
 ## Install
 
-Requires Node 20+, git on PATH, and Paperclip 2026.831 or newer (built against `@paperclipai/plugin-sdk` 2026.831.1).
-
-Windows:
+Requires Node 20 or newer, git on PATH, and Paperclip 2026.831 or newer.
 
 ```powershell
 scripts/install.ps1
 ```
 
-POSIX:
-
 ```bash
 scripts/install.sh
 ```
 
-Each script clones or pulls the repo, runs `npm install`, builds with `npm run build`, and installs the plugin with `paperclipai plugin install <dir>`.
+The script clones or pulls this repository, installs dependencies, builds, and runs `paperclipai plugin install`. Later updates: `scripts/update.ps1` or `scripts/update.sh`.
 
-To update later:
-
-```powershell
-scripts/update.ps1
-```
-
-```bash
-scripts/update.sh
-```
-
-Manual install, without the scripts:
+Manual install:
 
 ```bash
 npm install && npm run build && paperclipai plugin install .
 ```
 
-## Bind a repo
+## Bind a repository
 
-The plugin declares a trusted local folder with key `repo`. Bind it once per company, either from the plugin's empty state in the UI, or from the CLI:
+Open Git Graph from the sidebar. The first screen lists the project workspaces Paperclip already knows about, recently used repositories, and a folder browser. Pick one and the graph loads.
 
-```powershell
-scripts/bind-repo.ps1
-```
+From the CLI instead:
 
 ```bash
-scripts/bind-repo.sh
+paperclipai plugin local-folder:set paperclip-git-graph repo -C <companyId> --payload-json '{"path":"/abs/path"}'
 ```
 
-Or directly:
+## GitHub access
 
-```bash
-paperclipai plugin local-folder:set paperclip-git-graph repo -C <companyId> --payload-json '{"path":"C:\\abs\\path"}'
-```
+Public repositories need nothing. For private ones the plugin can reuse a local `gh` login (the default, `githubAuth: auto`) or a token stored as a Paperclip secret. The Connect GitHub button on the page shows which one is active. Tokens are never written to logs or state.
 
-## Configure
+## Settings
 
-| Setting | Default | Notes |
+| Setting | Default | Meaning |
 |---|---|---|
-| `githubToken` | none | Secret reference. Optional; needed to read a private repo. Stored as a Paperclip secret ref, never logged. |
-| `githubRepo` | auto-detected | `owner/name`. Left empty, it is read from the bound folder's `origin` remote. |
-| `fetchIntervalMinutes` | 15 | How often the worker runs `git fetch` in the background. |
-| `commitLimit` | 400 | Max commits loaded into the graph per query. |
-| `branchPattern` | `agent/{ISSUE-KEY}-slug` shape | A regex with a named group `issue`, used to pull the issue identifier out of a branch name. |
-
-## How ownership is resolved
-
-For each branch, the worker collects ownership from up to three sources and merges them:
-
-1. **branch-name**: the `issue` capture group from `branchPattern` matched against the branch name, resolved to a Paperclip issue and its assigned agent.
-2. **github-pr**: a GitHub pull request whose head ref is that branch, with state, author, reviewers, and check status.
-3. **run-log**: branch names mentioned in an issue's run logs, for branches that don't match `branchPattern` but were still touched by an agent run.
-
-Each source is recorded separately, so a branch can show ownership even when only one of the three signals is present.
+| `theme` | `paperclip` | Visual preset: `paperclip`, `sourcegit`, `gitlens`, or `fork`. Surfaces and text always follow the host theme; presets change density, chip style, and lane colours. |
+| `trunk` | `develop` | Branch used for ahead, behind, and merged checks. Falls back to `main`. |
+| `githubAuth` | `auto` | `auto`, `secret`, `gh-cli`, or `none`. |
+| `githubToken` | none | Secret reference, used when `githubAuth` is `secret` or `auto`. |
+| `githubRepo` | from `origin` | `owner/name` override. |
+| `fetchIntervalMinutes` | 15 | Background `git fetch` cadence. |
+| `commitLimit` | 400 | Commits kept in the cache per company. The page loads 120 at a time as you scroll. |
+| `branchPattern` | `^agent/(?<issue>[A-Z]+-\d+)-` | Regex with a named group `issue`. |
 
 ## Develop
 
 ```bash
-npm run dev        # esbuild watch build; Paperclip reloads dist on change
+npm run dev        # esbuild watch; the host reloads dist
 npm test
 npm run typecheck
 ```
 
-## Security note
+Layout: `src/worker` (git, cache, ownership, activity, live events), `src/graph` (lane layout), `src/theme` (tokens, presets, agent hues), `src/ui` (page, tabs, welcome screen), `migrations` (plugin database schema).
 
-The worker runs `git` in the bound folder, and the plugin UI executes same-origin JavaScript inside Paperclip. Install this plugin only from a source you trust. The GitHub token, if set, is stored as a Paperclip secret reference and is never written to logs.
+## Security
+
+The worker runs `git` inside the bound folder and the UI is same origin JavaScript inside Paperclip. Install only from a source you trust.
 
 ## License
 

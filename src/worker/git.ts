@@ -42,14 +42,18 @@ export async function readRefs(cwd: string): Promise<GitRef[]> {
 
 export function parseRefs(stdout: string): GitRef[] {
   const refs: GitRef[] = [];
+  const seen = new Set<string>();
   for (const record of stdout.split(RECORD)) {
     const line = record.replace(/^[\r\n]+/, "");
     if (!line.trim()) continue;
     const [refname, sha, upstream, track, head] = line.split(UNIT);
     const kind = refKind(refname);
     if (!kind) continue;
+    const name = shortRefName(refname);
+    if (seen.has(name)) continue;
+    seen.add(name);
     const ref: GitRef = {
-      name: shortRefName(refname),
+      name,
       kind,
       sha,
       isCurrent: head === "*"

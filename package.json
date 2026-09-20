@@ -22,7 +22,7 @@
     "plugin",
     "ui"
   ],
-  "author": "Kshitij Mittal",
+  "author": "Kshitijm7",
   "license": "Apache-2.0",
   "devDependencies": {
     "@paperclipai/plugin-sdk": "2026.831.1",

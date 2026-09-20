@@ -19,6 +19,16 @@ describe("parseRefs", () => {
     expect(refs[2]).toMatchObject({ name: "v1.2.0", kind: "tag" });
   });
 
+  it("keeps the first ref when a remote name collides with a local branch", () => {
+    const stdout = [
+      `refs/heads/pr82${U}aaa111${U}${U}${U}`,
+      `refs/remotes/pr82${U}bbb222${U}${U}${U}`,
+      `refs/tags/pr82${U}ccc333${U}${U}${U}`
+    ].join(R) + R;
+    const refs = parseRefs(stdout);
+    expect(refs).toEqual([{ name: "pr82", kind: "local", sha: "aaa111", isCurrent: false }]);
+  });
+
   it("ignores blank records and unknown ref namespaces", () => {
     expect(parseRefs(`${R}refs/stash${U}ddd${U}${U}${U}${R}`)).toEqual([]);
   });
