@@ -85,9 +85,9 @@ describe("detectGhCli", () => {
   it("reports the logged-in login when gh is authenticated", async () => {
     const exec = vi.fn(async (_file: string, args: string[]) => {
       if (args[0] === "auth") return { stdout: "token\n", stderr: "" };
-      return { stdout: "kshitijm7\n", stderr: "" };
+      return { stdout: "octocat\n", stderr: "" };
     });
-    expect(await detectGhCli(exec)).toEqual({ available: true, login: "kshitijm7" });
+    expect(await detectGhCli(exec)).toEqual({ available: true, login: "octocat" });
   });
 
   it("reports unavailable when gh is not installed or not logged in", async () => {

@@ -5,10 +5,10 @@ import { ownerFor } from "../src/ui/commit-owner.js";
 import { attributeMovedTips, readProvenance, recordProvenance } from "../src/worker/provenance.js";
 import { createFakeDb } from "./fake-db.js";
 
-const tip: GitCommit = { sha: "abc123", parents: [], author: "dev", email: "", date: "2026-09-25T00:00:00Z", subject: "work", refs: ["agent/MYS-12"], isHead: false };
+const tip: GitCommit = { sha: "abc123", parents: [], author: "dev", email: "", date: "2026-09-25T00:00:00Z", subject: "work", refs: ["agent/ABC-12"], isHead: false };
 
 function branchOwner(agentId: string, agentName: string): Map<string, BranchOwnership> {
-  return new Map([["agent/MYS-12", { branch: "agent/MYS-12", issueIdentifier: "MYS-12", agentId, agentName, sources: [] }]]);
+  return new Map([["agent/ABC-12", { branch: "agent/ABC-12", issueIdentifier: "ABC-12", agentId, agentName, sources: [] }]]);
 }
 
 describe("ownerFor", () => {
@@ -18,19 +18,19 @@ describe("ownerFor", () => {
     const after = ownerFor(tip, branchOwner("b", "Agent B"), commitAgents);
     expect(before?.agentName).toBe("Agent A");
     expect(after?.agentName).toBe("Agent A");
-    expect(after?.issueIdentifier).toBe("MYS-12");
+    expect(after?.issueIdentifier).toBe("ABC-12");
   });
 
   it("does not credit the current assignee when no run is recorded for the commit", () => {
     const owner = ownerFor(tip, branchOwner("b", "Agent B"));
     expect(owner?.agentId).toBeUndefined();
-    expect(owner?.issueIdentifier).toBe("MYS-12");
+    expect(owner?.issueIdentifier).toBe("ABC-12");
   });
 });
 
 describe("attributeMovedTips", () => {
-  const oldRefs = new Map([["main", "m1"], ["agent/MYS-12", "old"]]);
-  const newRefs = new Map([["main", "m1"], ["agent/MYS-12", "abc123"], ["agent/MYS-13", "def456"]]);
+  const oldRefs = new Map([["main", "m1"], ["agent/ABC-12", "old"]]);
+  const newRefs = new Map([["main", "m1"], ["agent/ABC-12", "abc123"], ["agent/ABC-13", "def456"]]);
 
   it("credits moved and new tips to the single agent that finished", () => {
     const out = attributeMovedTips([{ agentId: "a", runId: "r1", at: "t" }], oldRefs, newRefs);

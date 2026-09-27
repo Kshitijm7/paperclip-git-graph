@@ -10,7 +10,7 @@ describe("resolveTrunk", () => {
   const refs: GitRef[] = [
     { name: "develop", kind: "local", sha: "a", isCurrent: true },
     { name: "main", kind: "local", sha: "b", isCurrent: false },
-    { name: "agent/MYS-1-x", kind: "local", sha: "c", isCurrent: false }
+    { name: "agent/ABC-1-x", kind: "local", sha: "c", isCurrent: false }
   ];
 
   it("uses the configured trunk when it exists", () => {

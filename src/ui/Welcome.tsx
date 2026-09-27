@@ -233,7 +233,7 @@ function BrowsePanel({ companyId, initialPath, roots, busy, error, manualPath, o
           style={{ flex: 1 }}
           value={manualPath}
           onChange={(e) => onManualPathChange(e.target.value)}
-          placeholder="G:\\MyProject\\your-repo"
+          placeholder="/path/to/your-repo"
         />
         <button
           className="gg-btn"

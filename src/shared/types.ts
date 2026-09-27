@@ -1,7 +1,7 @@
 // Contract between worker (data producers) and UI (consumers). Keep serializable.
 
 export interface GitRef {
-  name: string;            // "develop", "origin/agent/MYS-12-foo", "v1.2.0"
+  name: string;            // "develop", "origin/agent/ABC-12-foo", "v1.2.0"
   kind: "local" | "remote" | "tag" | "head";
   sha: string;
   isCurrent: boolean;      // HEAD points here
@@ -29,12 +29,12 @@ export interface GitWorktree {
 
 export interface OwnershipSource {
   kind: "branch-name" | "github-pr" | "run-log";
-  detail: string;          // e.g. "agent/MYS-12-foo", "PR #34", "comment abc on MYS-12"
+  detail: string;          // e.g. "agent/ABC-12-foo", "PR #34", "comment abc on ABC-12"
 }
 
 export interface BranchOwnership {
   branch: string;          // short local name, no "origin/"
-  issueIdentifier?: string;   // "MYS-12"
+  issueIdentifier?: string;   // "ABC-12"
   issueId?: string;
   issueTitle?: string;
   issueStatus?: string;

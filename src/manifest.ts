@@ -11,7 +11,7 @@ const manifest: PaperclipPluginManifestV1 = {
   version: "0.1.0",
   displayName: "Git Graph",
   description: "SourceGit-style commit graph inside Paperclip, with agent, issue and PR ownership per branch",
-  author: "Kshitij Mittal",
+  author: "Kshitijm7",
   categories: ["ui"],
   capabilities: [
     "local.folders",

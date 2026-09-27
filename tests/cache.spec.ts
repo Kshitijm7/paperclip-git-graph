@@ -150,19 +150,19 @@ describe("diffRefEvents", () => {
   it("emits created, updated and deleted events from a ref map diff", () => {
     const before = new Map([
       ["develop", "sha1"],
-      ["agent/MYS-1-x", "sha2"],
+      ["agent/ABC-1-x", "sha2"],
       ["gone-branch", "sha3"]
     ]);
     const after = new Map([
       ["develop", "sha1-new"],
-      ["agent/MYS-1-x", "sha2"],
-      ["agent/MYS-2-y", "sha4"]
+      ["agent/ABC-1-x", "sha2"],
+      ["agent/ABC-2-y", "sha4"]
     ]);
     const events = diffRefEvents(before, after);
     expect(events.find((e) => e.kind === "branch.updated")?.branch).toBe("develop");
-    expect(events.find((e) => e.kind === "branch.created")?.branch).toBe("agent/MYS-2-y");
+    expect(events.find((e) => e.kind === "branch.created")?.branch).toBe("agent/ABC-2-y");
     expect(events.find((e) => e.kind === "branch.deleted")?.branch).toBe("gone-branch");
-    expect(events.some((e) => e.branch === "agent/MYS-1-x")).toBe(false);
+    expect(events.some((e) => e.branch === "agent/ABC-1-x")).toBe(false);
   });
 });
 

@@ -13,31 +13,31 @@ const PATTERN = "^agent/(?<issue>[A-Z]+-\\d+)-";
 
 const refs: GitRef[] = [
   { name: "develop", kind: "local", sha: "a1", isCurrent: true },
-  { name: "agent/MYS-12-add-graph", kind: "local", sha: "b1", isCurrent: false },
-  { name: "origin/agent/MYS-12-add-graph", kind: "remote", sha: "b1", isCurrent: false },
-  { name: "origin/agent/MYS-99-orphan", kind: "remote", sha: "c1", isCurrent: false },
+  { name: "agent/ABC-12-add-graph", kind: "local", sha: "b1", isCurrent: false },
+  { name: "origin/agent/ABC-12-add-graph", kind: "remote", sha: "b1", isCurrent: false },
+  { name: "origin/agent/ABC-99-orphan", kind: "remote", sha: "c1", isCurrent: false },
   { name: "origin/HEAD", kind: "remote", sha: "a1", isCurrent: false },
   { name: "v1.0.0", kind: "tag", sha: "a1", isCurrent: false }
 ];
 
 const issues = [
-  { id: "iss-1", identifier: "MYS-12", title: "Add graph", status: "in_progress", assigneeAgentId: "agt-1" },
-  { id: "iss-2", identifier: "MYS-40", title: "Hotfix", status: "done", assigneeAgentId: null }
+  { id: "iss-1", identifier: "ABC-12", title: "Add graph", status: "in_progress", assigneeAgentId: "agt-1" },
+  { id: "iss-2", identifier: "ABC-40", title: "Hotfix", status: "done", assigneeAgentId: null }
 ];
 
 const agents = [{ id: "agt-1", name: "Frontend", status: "working" }];
 
 describe("branchNames", () => {
   it("dedupes origin/x against x and drops tags and origin/HEAD", () => {
-    expect(branchNames(refs)).toEqual(["agent/MYS-12-add-graph", "agent/MYS-99-orphan", "develop"]);
+    expect(branchNames(refs)).toEqual(["agent/ABC-12-add-graph", "agent/ABC-99-orphan", "develop"]);
   });
 });
 
 describe("matchIssueIdentifier", () => {
   it("captures the named group", () => {
-    expect(matchIssueIdentifier("agent/MYS-12-add-graph", PATTERN)).toBe("MYS-12");
+    expect(matchIssueIdentifier("agent/ABC-12-add-graph", PATTERN)).toBe("ABC-12");
     expect(matchIssueIdentifier("develop", PATTERN)).toBeUndefined();
-    expect(matchIssueIdentifier("agent/MYS-12-x", "([")).toBeUndefined();
+    expect(matchIssueIdentifier("agent/ABC-12-x", "([")).toBeUndefined();
   });
 });
 
@@ -53,7 +53,7 @@ describe("parseOwnerRepo", () => {
 describe("mapPullRequests", () => {
   it("derives merged and draft states", () => {
     const prs = mapPullRequests([
-      { number: 1, title: "a", html_url: "u1", state: "closed", merged_at: "2026-09-01T00:00:00Z", head: { ref: "agent/MYS-12-add-graph" }, base: { ref: "develop" }, user: { login: "kshitij" }, updated_at: "2026-09-01T00:00:00Z" },
+      { number: 1, title: "a", html_url: "u1", state: "closed", merged_at: "2026-09-01T00:00:00Z", head: { ref: "agent/ABC-12-add-graph" }, base: { ref: "develop" }, user: { login: "kshitij" }, updated_at: "2026-09-01T00:00:00Z" },
       { number: 2, title: "b", html_url: "u2", state: "open", merged_at: null, draft: true, head: { ref: "x" }, base: { ref: "develop" }, user: { login: "bot" }, requested_reviewers: [{ login: "rev" }], updated_at: "2026-09-02T00:00:00Z" },
       { number: 3, title: "c", html_url: "u3", state: "closed", merged_at: null, head: { ref: "y" }, base: { ref: "develop" }, user: {}, updated_at: "2026-09-03T00:00:00Z" },
       { title: "no number" }
@@ -66,25 +66,25 @@ describe("mapPullRequests", () => {
 describe("scanCommentsForBranches", () => {
   it("finds branch names in comment bodies and keeps the first hit", () => {
     const hits = scanCommentsForBranches([
-      { id: "c1", issueId: "iss-2", body: "pushed to agent/MYS-99-orphan, tests green." },
-      { id: "c2", issueId: "iss-1", body: "also agent/MYS-99-orphan" },
+      { id: "c1", issueId: "iss-2", body: "pushed to agent/ABC-99-orphan, tests green." },
+      { id: "c2", issueId: "iss-1", body: "also agent/ABC-99-orphan" },
       { id: "c3", issueId: "iss-1", body: "no branch here" }
-    ], ["agent/MYS-99-orphan", "develop"]);
-    expect(hits.get("agent/MYS-99-orphan")).toEqual({ issueId: "iss-2", commentId: "c1" });
+    ], ["agent/ABC-99-orphan", "develop"]);
+    expect(hits.get("agent/ABC-99-orphan")).toEqual({ issueId: "iss-2", commentId: "c1" });
     expect(hits.size).toBe(1);
   });
 });
 
 describe("buildOwnership", () => {
   const pullRequests = mapPullRequests([
-    { number: 34, title: "Add graph", html_url: "u", state: "open", merged_at: null, head: { ref: "agent/MYS-12-add-graph" }, base: { ref: "develop" }, user: { login: "kshitij" }, updated_at: "2026-09-10T00:00:00Z" }
+    { number: 34, title: "Add graph", html_url: "u", state: "open", merged_at: null, head: { ref: "agent/ABC-12-add-graph" }, base: { ref: "develop" }, user: { login: "kshitij" }, updated_at: "2026-09-10T00:00:00Z" }
   ]);
 
   it("resolves issue, agent and PR and records every source", () => {
     const owned = buildOwnership({ refs, issues, agents, pullRequests, branchPattern: PATTERN });
-    const graph = owned.find((o) => o.branch === "agent/MYS-12-add-graph")!;
+    const graph = owned.find((o) => o.branch === "agent/ABC-12-add-graph")!;
     expect(graph).toMatchObject({
-      issueIdentifier: "MYS-12",
+      issueIdentifier: "ABC-12",
       issueId: "iss-1",
       issueTitle: "Add graph",
       issueStatus: "in_progress",
@@ -109,14 +109,14 @@ describe("buildOwnership", () => {
       issues,
       agents,
       pullRequests: [],
-      commentHits: scanCommentsForBranches([{ id: "c1", issueId: "iss-2", body: "on agent/MYS-99-orphan now" }], ["agent/MYS-99-orphan"]),
+      commentHits: scanCommentsForBranches([{ id: "c1", issueId: "iss-2", body: "on agent/ABC-99-orphan now" }], ["agent/ABC-99-orphan"]),
       branchPattern: PATTERN
     });
-    const orphan = owned.find((o) => o.branch === "agent/MYS-99-orphan")!;
+    const orphan = owned.find((o) => o.branch === "agent/ABC-99-orphan")!;
     expect(orphan.issueId).toBe("iss-2");
-    expect(orphan.issueIdentifier).toBe("MYS-40");
+    expect(orphan.issueIdentifier).toBe("ABC-40");
     expect(orphan.sources.map((s) => s.kind)).toEqual(["branch-name", "run-log"]);
-    expect(orphan.sources[1].detail).toBe("comment c1 on MYS-40");
+    expect(orphan.sources[1].detail).toBe("comment c1 on ABC-40");
   });
 
   it("prefers the most recently updated PR for a head ref", () => {
