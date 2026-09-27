@@ -1,10 +1,26 @@
-# paperclip-git-graph
+<div align="center">
 
-A git plugin for [Paperclip](https://github.com/paperclipai/paperclip). When a company of AI agents works on one repository, it gets hard to tell who is on which branch, which issue that branch is for, and whether anything is stuck. This plugin puts the commit graph, the agents, and their pull requests on one page inside Paperclip, so you can answer those questions without opening a terminal.
+# Git Graph for Paperclip
+
+**See what your AI agents are doing in git: who is on which branch, which issue it is for, and what is stuck.**
+
+[![CI](https://github.com/Kshitijm7/paperclip-git-graph/actions/workflows/ci.yml/badge.svg)](https://github.com/Kshitijm7/paperclip-git-graph/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Paperclip plugin](https://img.shields.io/badge/Paperclip-plugin-8b5cf6.svg)](https://github.com/paperclipai/paperclip)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg?logo=typescript&logoColor=white)](tsconfig.json)
+[![Node](https://img.shields.io/badge/node-20%2B-339933.svg?logo=node.js&logoColor=white)](#install)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+
+[Features](#features) · [Install](#install) · [Settings](#settings) · [Contributing](#contributing)
+
+</div>
+
+A plugin for [Paperclip](https://github.com/paperclipai/paperclip). When a company of AI agents works on one repository, it gets hard to tell who is on which branch, which issue that branch is for, and whether anything is stuck. This plugin puts the commit graph, the agents, and their pull requests on one page inside Paperclip, so you can answer those questions without opening a terminal.
 
 ![Commit graph with branch labels, issue keys and pull request state](docs/screenshots/commit-graph.png)
 
-The screenshots use made-up data: an example company called Acme with issue keys like `ACME-123`.
+> [!NOTE]
+> The screenshots use made-up data: an example company called Acme with issue keys like `ACME-123`.
 
 ## Features
 
@@ -142,7 +158,7 @@ Paperclip's plugin ecosystem is young, and this plugin is one small piece of it.
 
 Every kind of contribution is welcome, from a typo fix to a new tab:
 
-- Open an issue for a bug, an idea, or a question. Screenshots help a lot.
+- Open an [issue](https://github.com/Kshitijm7/paperclip-git-graph/issues/new/choose) for a bug, an idea, or a question. Screenshots help a lot.
 - Pick an issue and send a pull request. Small ones are easier to review.
 - Try it on your own repository and tell us what broke. Different branch naming schemes and remotes are exactly what we need to test against.
 - Build your own Paperclip plugin. The notes in [docs/](docs/) cover the SDK surface this repo uses and may save you some digging.
@@ -156,7 +172,7 @@ npm test
 npm run typecheck
 ```
 
-`npm run typecheck` and `npm test` should both pass before you open a pull request. The code layout and the rules we follow are in [CLAUDE.md](CLAUDE.md); the parts that matter most are to use Paperclip's own services before writing anything custom, to take colours from the host theme, and to add no runtime dependencies.
+`npm run typecheck` and `npm test` should both pass before you open a pull request. CI runs both, plus the build, on Linux and Windows with Node 20 and 22 for every pull request. The code layout and the rules we follow are in [CLAUDE.md](CLAUDE.md); the parts that matter most are to use Paperclip's own services before writing anything custom, to take colours from the host theme, and to add no runtime dependencies.
 
 First time contributing to open source? Say so in your pull request and we'll help you through it.
 
