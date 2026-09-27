@@ -2,8 +2,7 @@ import type { GitCommit } from "../shared/types.js";
 
 export type DotType = "default" | "head" | "merge";
 
-// A connector drawn across one row: from lane at the row's top edge to toLane at its bottom edge.
-// lane === toLane is a straight vertical pass-through; lane !== toLane is a diagonal merge/branch.
+// An edge from the dot centre band of `row` at `lane` to the centre band of `row + 1` at `toLane`.
 export interface GraphSegment {
   row: number;
   lane: number;
@@ -31,8 +30,8 @@ export interface LayoutOptions {
   headSha?: string;
 }
 
-export const UNIT_WIDTH = 12;
-export const LANE_MARGIN = 8;
+export const UNIT_WIDTH = 16;
+export const LANE_MARGIN = 10;
 
 export function laneX(lane: number): number {
   return LANE_MARGIN + lane * UNIT_WIDTH;
@@ -75,11 +74,9 @@ function firstFreeSlot(lanes: (string | null)[]): number {
 
 export function generateGraph(commits: GitCommit[], options: LayoutOptions = {}): GraphLayout {
   const firstParentOnly = options.firstParentOnly ?? false;
-
   const segments: GraphSegment[] = [];
   const dots: GraphDot[] = [];
   const rowOf: Record<string, number> = {};
-
   const lanes: (string | null)[] = [];
   const laneColors: number[] = [];
   const colorPicker = new ColorPicker();
@@ -87,65 +84,50 @@ export function generateGraph(commits: GitCommit[], options: LayoutOptions = {})
 
   commits.forEach((commit, row) => {
     rowOf[commit.sha] = row;
-
-    let laneIdx = lanes.indexOf(commit.sha);
-    if (laneIdx === -1) {
-      laneIdx = firstFreeSlot(lanes);
-      laneColors[laneIdx] = colorPicker.next();
+    let col = lanes.indexOf(commit.sha);
+    if (col === -1) {
+      col = firstFreeSlot(lanes);
+      laneColors[col] = colorPicker.next();
     }
-    const color = laneColors[laneIdx]!;
-    maxLaneUsed = Math.max(maxLaneUsed, laneIdx);
-
-    // Other lanes also waiting for this commit converge into it.
+    const color = laneColors[col]!;
     for (let i = 0; i < lanes.length; i++) {
-      if (i !== laneIdx && lanes[i] === commit.sha) {
-        segments.push({ row, lane: i, toLane: laneIdx, color: laneColors[i]! });
+      if (i !== col && lanes[i] === commit.sha) {
         lanes[i] = null;
         colorPicker.recycle(laneColors[i]!);
       }
     }
 
-    // Unrelated active lanes just pass straight through this row.
-    for (let i = 0; i < lanes.length; i++) {
-      if (i !== laneIdx && lanes[i] !== null) {
-        segments.push({ row, lane: i, toLane: i, color: laneColors[i]! });
-      }
-    }
-
     const isHead = options.headSha ? commit.sha === options.headSha : commit.isHead;
-    dots.push({
-      row,
-      lane: laneIdx,
-      color,
-      type: isHead ? "head" : commit.parents.length > 1 ? "merge" : "default",
-      sha: commit.sha,
-    });
+    dots.push({ row, lane: col, color, type: isHead ? "head" : commit.parents.length > 1 ? "merge" : "default", sha: commit.sha });
 
-    if (commit.parents.length > 0) {
-      lanes[laneIdx] = commit.parents[0]!;
-      segments.push({ row, lane: laneIdx, toLane: laneIdx, color });
-    } else {
-      lanes[laneIdx] = null;
-      colorPicker.recycle(color);
-    }
-
-    if (!firstParentOnly) {
-      for (let j = 1; j < commit.parents.length; j++) {
-        const parentSha = commit.parents[j]!;
-        const existingLane = lanes.indexOf(parentSha);
-        if (existingLane !== -1) {
-          segments.push({ row: row + 1, lane: laneIdx, toLane: existingLane, color: laneColors[existingLane]! });
-        } else {
-          const newLane = firstFreeSlot(lanes);
-          laneColors[newLane] = colorPicker.next();
-          lanes[newLane] = parentSha;
-          maxLaneUsed = Math.max(maxLaneUsed, newLane);
-          segments.push({ row: row + 1, lane: laneIdx, toLane: newLane, color: laneColors[newLane]! });
-        }
+    const parents = firstParentOnly ? commit.parents.slice(0, 1) : commit.parents;
+    const fromDot = new Map<number, number>();
+    lanes[col] = parents[0] ?? null;
+    if (parents.length > 0) fromDot.set(col, color);
+    else colorPicker.recycle(color);
+    for (const parentSha of parents.slice(1)) {
+      let lane = lanes.indexOf(parentSha);
+      if (lane === -1) {
+        lane = firstFreeSlot(lanes);
+        lanes[lane] = parentSha;
+        laneColors[lane] = colorPicker.next();
       }
+      fromDot.set(lane, laneColors[lane]!);
     }
+    while (lanes.length > 0 && lanes[lanes.length - 1] === null) lanes.pop();
+
+    const next = commits[row + 1];
+    const nextCol = next ? lanes.indexOf(next.sha) : -1;
+    for (let i = 0; i < lanes.length; i++) {
+      const sha = lanes[i];
+      if (sha === null || !next) continue;
+      const toLane = sha === next.sha && nextCol !== -1 ? nextCol : i;
+      const fromLane = fromDot.has(i) ? col : i;
+      segments.push({ row, lane: fromLane, toLane, color: laneColors[i]! });
+      maxLaneUsed = Math.max(maxLaneUsed, i, fromLane, toLane);
+    }
+    maxLaneUsed = Math.max(maxLaneUsed, col);
   });
 
-  const laneWidth = laneX(maxLaneUsed) + LANE_MARGIN;
-  return { segments, dots, rowOf, laneWidth };
+  return { segments, dots, rowOf, laneWidth: laneX(maxLaneUsed) + LANE_MARGIN };
 }

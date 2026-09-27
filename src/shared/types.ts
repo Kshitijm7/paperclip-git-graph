@@ -45,6 +45,13 @@ export interface BranchOwnership {
   sources: OwnershipSource[];
 }
 
+export interface CommitProvenance {
+  agentId: string;
+  agentName?: string;
+  runId?: string;
+  at: string;
+}
+
 export interface PullRequestInfo {
   number: number;
   title: string;
@@ -71,6 +78,7 @@ export interface RepoSnapshot {
   total?: number;                // total commits available for the query
   worktrees: GitWorktree[];
   ownership: BranchOwnership[];
+  commitAgents?: Record<string, CommitProvenance>;   // sha -> agent run that moved a branch tip to it
   truncated: boolean;
 }
 

@@ -133,7 +133,9 @@ export const CSS = `
   padding: 0 5px;
   height: 17px;
   font-size: 11px;
-  max-width: 220px;
+  max-width: 180px;
+  min-width: 0;
+  flex-shrink: 1;
 }
 .gg-chip {
   display: inline-flex;
