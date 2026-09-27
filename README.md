@@ -2,7 +2,7 @@
 
 A git plugin for [Paperclip](https://github.com/paperclipai/paperclip). When a company of AI agents works on one repository, it gets hard to tell who is on which branch, which issue that branch is for, and whether anything is stuck. This plugin puts the commit graph, the agents, and their pull requests on one page inside Paperclip, so you can answer those questions without opening a terminal.
 
-![Commit graph with branch labels, issue keys and pull request state](docs/screenshots/graph.png)
+![Commit graph with branch labels, issue keys and pull request state](docs/screenshots/commit-graph.png)
 
 The screenshots use made-up data: an example company called Acme with issue keys like `ACME-123`.
 
