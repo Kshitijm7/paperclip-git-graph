@@ -1,5 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type {
+  AgentRunSpan,
+  PluginSettings,
   ActivityData,
   AgentGitCard,
   BranchOwnership,
@@ -17,7 +19,7 @@ const BRANCH_CAP = 200;
 const activityCache = new Map<string, { at: number; data: ActivityData }>();
 
 export function invalidateActivityCache(companyId: string): void {
-  activityCache.delete(companyId);
+  for (const key of activityCache.keys()) if (key.startsWith(`${companyId}:`)) activityCache.delete(key);
 }
 
 export interface AgentLikeForActivity {
@@ -29,8 +31,7 @@ export interface AgentLikeForActivity {
 export function resolveTrunk(configuredTrunk: string, refs: GitRef[]): string {
   const names = new Set(refs.filter((ref) => ref.kind === "local").map((ref) => ref.name));
   if (names.has(configuredTrunk)) return configuredTrunk;
-  if (names.has("main")) return "main";
-  return configuredTrunk;
+  return configuredTrunk || [...names][0] || "";
 }
 
 export function deriveStage(input: {
@@ -61,12 +62,14 @@ export async function buildActivity(
   refs: GitRef[],
   commits: GitCommit[],
   ownership: BranchOwnership[],
-  agents: AgentLikeForActivity[]
+  agents: AgentLikeForActivity[],
+  cfg: Pick<PluginSettings, "farBehindCommits" | "staleDays" | "hungRunMinutes" | "timelineHours">
 ): Promise<ActivityData> {
-  const cached = activityCache.get(companyId);
+  const trunk = resolveTrunk(trunkConfig, refs);
+  const cacheKey = `${companyId}:${trunk}`;
+  const cached = activityCache.get(cacheKey);
   if (cached && Date.now() - cached.at < ACTIVITY_TTL_MS) return cached.data;
 
-  const trunk = resolveTrunk(trunkConfig, refs);
   const localBranches = [...new Set(refs.filter((ref) => ref.kind === "local").map((ref) => ref.name))].slice(0, BRANCH_CAP);
   const lastRuns = await readLastRuns(ctx, companyId);
   const ownershipByBranch = new Map(ownership.map((entry) => [entry.branch, entry]));
@@ -132,8 +135,35 @@ export async function buildActivity(
   }
 
   const events = await readEvents(ctx, companyId);
+  const runs = await readRunSpans(ctx, companyId, cfg.timelineHours);
 
-  const data: ActivityData = { trunk, agents: agentCards, issues, events, generatedAt: new Date().toISOString() };
-  activityCache.set(companyId, { at: Date.now(), data });
+  const branches = [...new Set(refs.filter((ref) => ref.kind === "local").map((ref) => ref.name))].sort();
+  const thresholds = { farBehindCommits: cfg.farBehindCommits, staleDays: cfg.staleDays, hungRunMinutes: cfg.hungRunMinutes, timelineHours: cfg.timelineHours };
+  const data: ActivityData = { trunk, branches, agents: agentCards, issues, events, runs, thresholds, generatedAt: new Date().toISOString() };
+  activityCache.set(cacheKey, { at: Date.now(), data });
   return data;
+}
+
+interface RunRow {
+  agent_id: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export async function readRunSpans(ctx: PluginContext, companyId: string, hours: number): Promise<AgentRunSpan[]> {
+  const rows = await ctx.db
+    .query<RunRow>(
+      `SELECT agent_id, status, started_at, finished_at FROM public.heartbeat_runs WHERE company_id = $1 AND started_at > now() - make_interval(hours => $2) ORDER BY started_at ASC LIMIT 5000`,
+      [companyId, Math.round(hours)]
+    )
+    .catch(() => [] as RunRow[]);
+  return rows
+    .filter((row) => row.started_at)
+    .map((row) => ({
+      agentId: row.agent_id,
+      start: new Date(row.started_at!).toISOString(),
+      end: row.finished_at ? new Date(row.finished_at).toISOString() : null,
+      status: row.status
+    }));
 }

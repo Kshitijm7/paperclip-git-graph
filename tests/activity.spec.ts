@@ -17,8 +17,12 @@ describe("resolveTrunk", () => {
     expect(resolveTrunk("develop", refs)).toBe("develop");
   });
 
-  it("falls back to main when the configured trunk is absent", () => {
-    expect(resolveTrunk("release", refs)).toBe("main");
+  it("keeps a configured trunk that has no local branch", () => {
+    expect(resolveTrunk("release", refs)).toBe("release");
+  });
+
+  it("uses the first local branch when nothing is configured or detected", () => {
+    expect(resolveTrunk("", refs)).toBe(refs.find((r) => r.kind === "local")!.name);
   });
 
   it("falls back to the configured value when neither it nor main exists", () => {

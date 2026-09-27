@@ -13,8 +13,25 @@ export const DEFAULTS: PluginSettings = {
   githubToken: null,
   githubAuth: "auto",
   theme: "paperclip",
-  trunk: "develop"
+  trunk: "",
+  remote: "",
+  farBehindCommits: 20,
+  staleDays: 3,
+  hungRunMinutes: 60,
+  timelineHours: 24
 };
+
+export const GENERIC_ISSUE_PATTERN = "(?<issue>[A-Z][A-Z0-9]+-\\d+)";
+
+export function patternForPrefix(prefix: string | null | undefined): string {
+  if (!prefix || !/^[A-Za-z0-9]+$/.test(prefix)) return GENERIC_ISSUE_PATTERN;
+  return `(?<issue>${prefix}-\\d+)`;
+}
+
+function positive(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 const GITHUB_AUTH_MODES = new Set(["auto", "secret", "gh-cli", "none"]);
 
@@ -43,12 +60,16 @@ export async function resolveConfig(ctx: PluginContext, companyId: string): Prom
   const branchPattern = typeof raw.branchPattern === "string" && raw.branchPattern ? raw.branchPattern : DEFAULTS.branchPattern;
 
   let resolvedBranchPattern = branchPattern;
-  if (!isValidPattern(branchPattern)) {
+  if (!branchPattern) {
+    const company = await ctx.companies.get(companyId).catch(() => null);
+    resolvedBranchPattern = patternForPrefix(company?.issuePrefix);
+  } else if (!isValidPattern(branchPattern)) {
     if (!warnedCompanies.has(companyId)) {
       warnedCompanies.add(companyId);
       ctx.logger.warn("Invalid branchPattern in config, falling back to default", { companyId, branchPattern });
     }
-    resolvedBranchPattern = DEFAULTS.branchPattern;
+    const company = await ctx.companies.get(companyId).catch(() => null);
+    resolvedBranchPattern = patternForPrefix(company?.issuePrefix);
   }
 
   return {
@@ -59,6 +80,11 @@ export async function resolveConfig(ctx: PluginContext, companyId: string): Prom
     githubToken: raw.githubToken ?? DEFAULTS.githubToken,
     githubAuth: typeof raw.githubAuth === "string" && GITHUB_AUTH_MODES.has(raw.githubAuth) ? (raw.githubAuth as PluginSettings["githubAuth"]) : DEFAULTS.githubAuth,
     theme: typeof raw.theme === "string" && (THEME_PRESETS as string[]).includes(raw.theme) ? (raw.theme as PluginSettings["theme"]) : DEFAULTS.theme,
-    trunk: typeof raw.trunk === "string" && raw.trunk.trim() ? raw.trunk.trim() : DEFAULTS.trunk
+    trunk: typeof raw.trunk === "string" ? raw.trunk.trim() : DEFAULTS.trunk,
+    remote: typeof raw.remote === "string" ? raw.remote.trim() : DEFAULTS.remote,
+    farBehindCommits: positive(raw.farBehindCommits, DEFAULTS.farBehindCommits),
+    staleDays: positive(raw.staleDays, DEFAULTS.staleDays),
+    hungRunMinutes: positive(raw.hungRunMinutes, DEFAULTS.hungRunMinutes),
+    timelineHours: Math.min(168, positive(raw.timelineHours, DEFAULTS.timelineHours))
   };
 }

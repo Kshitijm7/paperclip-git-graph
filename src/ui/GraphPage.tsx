@@ -38,7 +38,7 @@ const LANE_GUTTER = 14;
 const OVERSCAN = 8;
 const AUTHOR_WIDTH = 140;
 const SHA_WIDTH = 72;
-const TIME_WIDTH = 96;
+const TIME_WIDTH = 118;
 const GRID = (graphWidth: number) =>
   `${graphWidth}px minmax(0, 1fr) ${TIME_WIDTH}px ${AUTHOR_WIDTH}px ${SHA_WIDTH}px`;
 
@@ -336,8 +336,8 @@ export function GraphPage({ context }: PluginPageProps) {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search subject, author, sha"
           />
-          <span className="gg-dim gg-ell gg-mono" style={{ marginLeft: "auto", maxWidth: 260 }} title={snapshot.path}>
-            {snapshot.path}
+          <span className="gg-dim gg-ell" style={{ marginLeft: "auto", maxWidth: 200 }} title={snapshot.path ?? undefined}>
+            {snapshot.path?.split(/[\\/]/).filter(Boolean).pop()}
           </span>
           <span
             aria-label={snapshot.healthy ? "healthy" : `${snapshot.problems.length} problems`}
@@ -351,7 +351,7 @@ export function GraphPage({ context }: PluginPageProps) {
             }}
           />
           <span className="gg-dim" style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
-            {snapshot.fetchedAt ? relativeDate(snapshot.fetchedAt) : "never fetched"}
+            {snapshot.fetchedAt ? `fetched ${relativeDate(snapshot.fetchedAt)}` : "not fetched yet"}
           </span>
           {status?.github && !status.github.ok && (
             <GithubChip companyId={companyId} github={status.github} amber />
@@ -591,7 +591,7 @@ function SettingsStrip({
       </label>
       {config && (
         <>
-          <span className="gg-dim gg-ell" style={{ maxWidth: 220 }} title={config.effective.githubRepo || "auto-detected from origin"}>
+          <span className="gg-dim gg-ell" style={{ maxWidth: 220 }} title={config.effective.githubRepo || "auto-detected from the git remote"}>
             {config.effective.githubRepo || "repo: auto-detected"}
           </span>
           <span className="gg-dim">fetch every {config.effective.fetchIntervalMinutes}m</span>
@@ -817,7 +817,7 @@ function SideRow({
         )}
       </span>
       <span className="gg-ell" style={{ fontWeight: bold ? 700 : 400 }}>
-        {label}
+        {owner?.issueIdentifier ? shortBranchLabel(label, owner.issueIdentifier) : label}
       </span>
       {owner ? <OwnerPill owner={owner} variant="compact" preset={preset ?? resolvePreset(undefined)} /> : <span />}
     </button>
@@ -868,13 +868,16 @@ function Row({
       <div style={{ height: preset.rowHeight, width: graphColWidth }} />
       <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, paddingLeft: 8 }}>
         <div
-          style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0, maxWidth: "45%", overflow: "hidden", flexShrink: 1 }}
+          style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0, maxWidth: "34%", overflow: "hidden", flexShrink: 1 }}
           title={commit.refs.join(", ")}
         >
           {commit.isHead && <RefBadge name="HEAD" kind="head" />}
-          {commit.refs.map((name) => (
-            <RefBadge key={name} name={name} kind={refByName.get(name)?.kind ?? "local"} />
+          {mergeRefs(commit.refs, refByName).slice(0, 1).map((ref) => (
+            <RefBadge key={ref.name} name={ref.name} kind={ref.kind} remoteToo={ref.remoteToo} remote={ref.remote} />
           ))}
+          {mergeRefs(commit.refs, refByName).length > 1 && (
+            <span className="gg-dim" style={{ fontSize: 11, flexShrink: 0 }}>+{mergeRefs(commit.refs, refByName).length - 1}</span>
+          )}
         </div>
         <Subject text={commit.subject} prUrlByNumber={prUrlByNumber} />
         {owner && <OwnerPill owner={owner} variant="row" preset={preset} />}
@@ -967,15 +970,45 @@ function GraphOverlay({
   );
 }
 
-function RefBadge({ name, kind }: { name: string; kind: GitRef["kind"] }) {
+function RefBadge({ name, kind, remoteToo, remote }: { name: string; kind: GitRef["kind"]; remoteToo?: boolean; remote?: string }) {
   const icon = kind === "remote" ? <CloudIcon /> : kind === "tag" ? <TagIcon /> : <CheckIcon />;
   const color = kind === "head" ? okColor : kind === "tag" ? "var(--gg-fg-dim)" : "var(--gg-fg)";
+  const where = kind === "remote" ? `on ${remote ?? "the remote"} only` : remoteToo ? `local and on ${remote ?? "the remote"}` : kind;
   return (
-    <span className="gg-badge gg-mono" title={`${kind}: ${name}`} style={{ color }}>
+    <span className="gg-badge gg-mono" title={`${name} (${where})`} style={{ color }}>
       {icon}
+      {remoteToo && <CloudIcon />}
       <span className="gg-ell">{name}</span>
     </span>
   );
+}
+
+function remoteBranchName(name: string): { remote: string; branch: string } {
+  const slash = name.indexOf("/");
+  return slash === -1 ? { remote: "", branch: name } : { remote: name.slice(0, slash), branch: name.slice(slash + 1) };
+}
+
+function mergeRefs(refs: string[], refByName: Map<string, GitRef>): { name: string; kind: GitRef["kind"]; remoteToo: boolean; remote?: string }[] {
+  const kindOf = (name: string) => refByName.get(name)?.kind ?? "local";
+  const locals = new Set(refs.filter((name) => kindOf(name) !== "remote" && kindOf(name) !== "tag"));
+  const remoteFor = new Map<string, string>();
+  for (const name of refs) {
+    if (kindOf(name) !== "remote") continue;
+    const { remote, branch } = remoteBranchName(name);
+    if (locals.has(branch)) remoteFor.set(branch, remote);
+  }
+  const out: { name: string; kind: GitRef["kind"]; remoteToo: boolean; remote?: string }[] = [];
+  for (const name of refs) {
+    const kind = kindOf(name);
+    if (kind === "remote" && locals.has(remoteBranchName(name).branch)) continue;
+    out.push({ name, kind, remoteToo: remoteFor.has(name), remote: remoteFor.get(name) ?? (kind === "remote" ? remoteBranchName(name).remote : undefined) });
+  }
+  return out;
+}
+
+function shortBranchLabel(label: string, issueIdentifier: string): string {
+  const idx = label.indexOf(`${issueIdentifier}-`);
+  return idx === -1 ? label : label.slice(idx + issueIdentifier.length + 1) || label;
 }
 
 // compact: sidebar row, issue key only, full context in the title tooltip.
@@ -1013,10 +1046,10 @@ function OwnerPill({
   }
 
   return (
-    <span className="gg-chip gg-dim" title={hover} style={{ marginLeft: "auto", flexShrink: 0 }}>
+    <span className="gg-chip gg-dim" title={hover} style={{ marginLeft: "auto", flexShrink: 0, whiteSpace: "nowrap", maxWidth: 150 }}>
       {agentColor && <span style={{ width: 6, height: 6, borderRadius: "50%", background: agentColor, flexShrink: 0 }} />}
       {pr && <span style={{ width: 6, height: 6, borderRadius: "50%", background: stateColor, flexShrink: 0 }} />}
-      {[key, owner.agentName, pr ? `PR #${pr.number}` : null].filter(Boolean).join(" · ") || "unowned"}
+      <span className="gg-ell">{[key, pr ? `PR #${pr.number}` : null].filter(Boolean).join(" · ") || owner.agentName || "unowned"}</span>
     </span>
   );
 }

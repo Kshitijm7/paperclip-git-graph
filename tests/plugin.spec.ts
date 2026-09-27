@@ -53,11 +53,16 @@ describe("manifest", () => {
     expect(Object.keys(properties).sort()).toEqual([
       "branchPattern",
       "commitLimit",
+      "farBehindCommits",
       "fetchIntervalMinutes",
       "githubAuth",
       "githubRepo",
       "githubToken",
+      "hungRunMinutes",
+      "remote",
+      "staleDays",
       "theme",
+      "timelineHours",
       "trunk"
     ]);
     expect(properties.githubToken.format).toBe("secret-ref");

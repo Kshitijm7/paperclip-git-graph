@@ -100,6 +100,7 @@ export const CSS = `
 
 .gg-row {
   display: grid;
+  column-gap: 12px;
   align-items: center;
   height: 26px;
   cursor: default;
@@ -111,6 +112,7 @@ export const CSS = `
 
 .gg-head {
   display: grid;
+  column-gap: 12px;
   align-items: center;
   height: 26px;
   background: var(--gg-panel);
@@ -149,6 +151,58 @@ export const CSS = `
   font-size: 10.5px;
   max-width: 160px;
 }
+.gg-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--pill);
+  background: color-mix(in oklch, var(--pill) 14%, transparent);
+}
+.gg-pill::before {
+  content: "";
+  flex: 0 0 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pill);
+}
+.gg-table { display: grid; min-width: 0; }
+.gg-table-head, .gg-table-row {
+  display: grid;
+  align-items: center;
+  column-gap: 12px;
+  padding: 0 14px;
+  min-width: 0;
+}
+.gg-table-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 32px;
+  background: var(--gg-panel);
+  border-bottom: 1px solid var(--gg-border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--gg-fg-dim);
+}
+.gg-table-row {
+  min-height: 44px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid color-mix(in oklch, var(--gg-border) 60%, transparent);
+}
+.gg-table-row:hover { background: var(--gg-hover); }
+.gg-table-row > *, .gg-table-head > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gg-sub { display: block; font-size: 11.5px; color: var(--gg-fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gg-num-ahead { color: oklch(62% 0.15 145); }
+.gg-num-behind { color: oklch(70% 0.15 70); }
 .gg-tab {
   background: none;
   border: 0;

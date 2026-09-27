@@ -55,7 +55,7 @@ export function GithubChip({
     <div style={{ position: "relative", display: "inline-block" }}>
       <button
         className={amber ? "gg-btn gg-btn-amber" : "gg-btn"}
-        style={{ color, borderRadius: btnRadius }}
+        style={{ color, borderRadius: btnRadius, whiteSpace: "nowrap", flexShrink: 0 }}
         onClick={() => setOpen((o) => !o)}
       >
         {label}

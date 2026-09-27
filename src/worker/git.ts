@@ -192,7 +192,7 @@ export async function readRefsHash(cwd: string): Promise<string> {
   return hash.digest("hex");
 }
 
-/** Parses `for-each-ref --format=%(refname:short)%x1f%(objectname)%x1f%(ahead-behind:<trunk>)` output into a ref -> counts map. */
+/** Parses `for-each-ref --format=%(refname:short)%1f%(objectname)%1f%(ahead-behind:<trunk>)` output into a ref -> counts map. */
 export function parseAheadBehindOutput(output: string): Map<string, { ahead: number; behind: number }> {
   const map = new Map<string, { ahead: number; behind: number }>();
   for (const line of output.split("\n")) {
@@ -210,7 +210,7 @@ export async function readAheadBehindMap(cwd: string, trunk: string): Promise<Ma
   try {
     const out = await git(cwd, [
       "for-each-ref",
-      `--format=%(refname:short)%x1f%(objectname)%x1f%(ahead-behind:${trunk})`,
+      `--format=%(refname:short)%1f%(objectname)%1f%(ahead-behind:${trunk})`,
       "refs/heads",
       "refs/remotes"
     ]);
@@ -238,9 +238,35 @@ export async function readMergedBranches(cwd: string, trunk: string): Promise<Se
   return merged;
 }
 
-export async function readOriginUrl(cwd: string): Promise<string | null> {
+export async function resolveRemote(cwd: string, configured = ""): Promise<string | null> {
+  if (configured) return configured;
   try {
-    return (await git(cwd, ["remote", "get-url", "origin"])).trim() || null;
+    const remotes = (await git(cwd, ["remote"])).split("\n").map((r) => r.trim()).filter(Boolean);
+    return remotes.includes("origin") ? "origin" : remotes[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function readOriginUrl(cwd: string, configuredRemote = ""): Promise<string | null> {
+  const remote = await resolveRemote(cwd, configuredRemote);
+  if (!remote) return null;
+  try {
+    return (await git(cwd, ["remote", "get-url", remote])).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function detectDefaultBranch(cwd: string, configuredRemote = ""): Promise<string | null> {
+  const remote = await resolveRemote(cwd, configuredRemote);
+  if (remote) {
+    const ref = (await git(cwd, ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`]).catch(() => "")).trim();
+    if (ref.startsWith(`${remote}/`)) return ref.slice(remote.length + 1);
+  }
+  try {
+    const current = (await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    return current && current !== "HEAD" ? current : null;
   } catch {
     return null;
   }

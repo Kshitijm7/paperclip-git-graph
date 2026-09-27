@@ -21,8 +21,6 @@ export interface CommentLike {
   body: string;
 }
 
-const BRANCH_IN_TEXT = /\bagent\/[A-Za-z0-9._/-]+/g;
-
 export function branchNames(refs: GitRef[]): string[] {
   const seen = new Set<string>();
   for (const ref of refs) {
@@ -75,12 +73,26 @@ export function mapPullRequests(raw: unknown[]): PullRequestInfo[] {
   return out;
 }
 
-export function scanCommentsForBranches(comments: CommentLike[]): Map<string, { issueId: string; commentId: string }> {
+const BRANCH_CHAR = /[A-Za-z0-9._/-]/;
+
+function mentions(body: string, branch: string): boolean {
+  let at = body.indexOf(branch);
+  while (at !== -1) {
+    const before = at === 0 ? "" : body[at - 1]!;
+    const after = body[at + branch.length] ?? "";
+    const trailingPunct = after === "." && !BRANCH_CHAR.test(body[at + branch.length + 1] ?? "");
+    if (!BRANCH_CHAR.test(before) && (!BRANCH_CHAR.test(after) || trailingPunct)) return true;
+    at = body.indexOf(branch, at + 1);
+  }
+  return false;
+}
+
+export function scanCommentsForBranches(comments: CommentLike[], knownBranches: string[]): Map<string, { issueId: string; commentId: string }> {
   const hits = new Map<string, { issueId: string; commentId: string }>();
+  const branches = [...knownBranches].sort((a, b) => b.length - a.length);
   for (const comment of comments) {
-    for (const found of comment.body.match(BRANCH_IN_TEXT) ?? []) {
-      const branch = found.replace(/[.,;:)\]]+$/, "");
-      if (!hits.has(branch)) hits.set(branch, { issueId: comment.issueId, commentId: comment.id });
+    for (const branch of branches) {
+      if (!hits.has(branch) && mentions(comment.body, branch)) hits.set(branch, { issueId: comment.issueId, commentId: comment.id });
     }
   }
   return hits;
@@ -153,10 +165,10 @@ export function buildOwnership(input: BuildOwnershipInput): BranchOwnership[] {
   });
 }
 
-export async function resolveRepoSlug(cwd: string, configuredRepo?: string): Promise<string | null> {
+export async function resolveRepoSlug(cwd: string, configuredRepo?: string, remote = ""): Promise<string | null> {
   const configured = (configuredRepo ?? "").trim();
   if (configured) return configured;
-  return parseOwnerRepo(await readOriginUrl(cwd));
+  return parseOwnerRepo(await readOriginUrl(cwd, remote));
 }
 
 export async function fetchPullRequests(

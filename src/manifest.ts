@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { FOLDER_KEY, THEME_PRESETS } from "./shared/types.js";
 
-export const DEFAULT_BRANCH_PATTERN = "^agent/(?<issue>[A-Z]+-\\d+)-";
+export const DEFAULT_BRANCH_PATTERN = "";
 export const DEFAULT_COMMIT_LIMIT = 400;
 export const DEFAULT_FETCH_INTERVAL_MINUTES = 15;
 
@@ -38,7 +38,8 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
   database: {
     namespaceSlug: "git_graph",
-    migrationsDir: "migrations"
+    migrationsDir: "migrations",
+    coreReadTables: ["heartbeat_runs"]
   },
   entrypoints: {
     worker: "./dist/worker.js",
@@ -92,7 +93,7 @@ const manifest: PaperclipPluginManifestV1 = {
       branchPattern: {
         type: "string",
         title: "Branch ownership pattern",
-        description: "Regex with a named group 'issue' that maps a branch name to an issue identifier.",
+        description: "Regex with a named group 'issue' that maps a branch name to an issue identifier. Leave empty to match this company's issue key (for example ABC-12) anywhere in the branch name.",
         default: DEFAULT_BRANCH_PATTERN
       },
       theme: {
@@ -105,8 +106,43 @@ const manifest: PaperclipPluginManifestV1 = {
       trunk: {
         type: "string",
         title: "Trunk branch",
-        description: "The branch other branches are compared against for ahead/behind and merge status.",
-        default: "develop"
+        description: "The branch other branches are compared against for ahead/behind and merge status. Leave empty to use the remote's default branch.",
+        default: ""
+      },
+      remote: {
+        type: "string",
+        title: "Remote name",
+        description: "Git remote used for GitHub lookups and for pairing local and remote branches. Leave empty to use origin, or the first remote if there is no origin.",
+        default: ""
+      },
+      farBehindCommits: {
+        type: "number",
+        title: "Far behind threshold (commits)",
+        description: "Flag a branch in Needs attention when it is this many commits behind the trunk.",
+        default: 20,
+        minimum: 1
+      },
+      staleDays: {
+        type: "number",
+        title: "Stale branch threshold (days)",
+        description: "Flag a branch in Needs attention when it has no commit for this many days.",
+        default: 3,
+        minimum: 1
+      },
+      hungRunMinutes: {
+        type: "number",
+        title: "Hung run threshold (minutes)",
+        description: "Failed runs longer than this are drawn as a thin line on the timeline.",
+        default: 60,
+        minimum: 1
+      },
+      timelineHours: {
+        type: "number",
+        title: "Timeline window (hours)",
+        description: "How far back the Agents timeline reaches.",
+        default: 24,
+        minimum: 1,
+        maximum: 168
       }
     }
   },

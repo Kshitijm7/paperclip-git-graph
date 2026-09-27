@@ -22,7 +22,12 @@ const baseSettings: PluginSettings = {
   githubToken: null,
   githubAuth: "auto",
   theme: "paperclip",
-  trunk: "develop"
+  trunk: "develop",
+  remote: "",
+  farBehindCommits: 20,
+  staleDays: 3,
+  hungRunMinutes: 60,
+  timelineHours: 24
 };
 
 describe("resolveGithubToken", () => {

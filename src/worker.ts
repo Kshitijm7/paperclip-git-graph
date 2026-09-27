@@ -3,7 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import manifest, { DEFAULT_FETCH_INTERVAL_MINUTES } from "./manifest.js";
 import { ACTION_KEYS, DATA_KEYS, DATA_KEYS_V2, FOLDER_KEY } from "./shared/types.js";
 import type { BranchOwnership, CachedSnapshotMeta, GraphQuery, PullRequestInfo, RepoSnapshot } from "./shared/types.js";
-import { countCommits, fetchAll, gitVersion, readCommits, readHead, readRefs, readRefsHash, readWorktrees } from "./worker/git.js";
+import { countCommits, detectDefaultBranch, fetchAll, gitVersion, readCommits, readHead, readRefs, readRefsHash, readWorktrees } from "./worker/git.js";
 import { browseDirectory, listRoots, listWorkspaceCandidates, pushRecent, getRecent } from "./worker/fs.js";
 import { DEFAULTS, resolveConfig, type PluginSettings } from "./worker/config.js";
 import { detectGhCli, resolveGithubToken } from "./worker/github-auth.js";
@@ -13,6 +13,7 @@ import {
   fetchPullRequests,
   resolveRepoSlug,
   scanCommentsForBranches,
+  branchNames,
   type AgentLike,
   type CommentLike,
   type IssueLike
@@ -48,7 +49,7 @@ async function cachedGhStatus() {
 }
 
 async function buildGithubStatus(ctx: PluginContext, companyId: string, cfg: PluginSettings, cwd: string | null): Promise<StatusGithub> {
-  const slug = cwd ? await resolveRepoSlug(cwd, cfg.githubRepo || undefined).catch(() => null) : null;
+  const slug = cwd ? await resolveRepoSlug(cwd, cfg.githubRepo || undefined, cfg.remote).catch(() => null) : null;
   const hasSecret = Boolean(cfg.githubToken && typeof cfg.githubToken === "object");
   const mode = cfg.githubAuth ?? "auto";
 
@@ -94,7 +95,7 @@ async function loadPullRequests(
   cfg: PluginSettings,
   force: boolean
 ): Promise<PullRequestInfo[]> {
-  const slug = await resolveRepoSlug(cwd, cfg.githubRepo || undefined);
+  const slug = await resolveRepoSlug(cwd, cfg.githubRepo || undefined, cfg.remote);
   if (!slug) return [];
   const key = { scopeKind: "company" as const, scopeId: companyId, stateKey: `prs:${slug}` };
   const cached = (await ctx.state.get(key)) as { at?: number; prs?: PullRequestInfo[] } | null;
@@ -112,7 +113,7 @@ async function loadPullRequests(
   }
 }
 
-async function loadCommentHits(ctx: PluginContext, companyId: string, issues: IssueLike[], force: boolean) {
+async function loadCommentHits(ctx: PluginContext, companyId: string, issues: IssueLike[], knownBranches: string[], force: boolean) {
   const key = { scopeKind: "company" as const, scopeId: companyId, stateKey: "comments" };
   const cached = (await ctx.state.get(key)) as { at?: number; hits?: Record<string, { issueId: string; commentId: string }> } | null;
   if (!force && cached?.at && Date.now() - cached.at < REMOTE_TTL_MS) return new Map(Object.entries(cached.hits ?? {}));
@@ -128,7 +129,7 @@ async function loadCommentHits(ctx: PluginContext, companyId: string, issues: Is
       break;
     }
   }
-  const hits = scanCommentsForBranches(comments);
+  const hits = scanCommentsForBranches(comments, knownBranches);
   await ctx.state.set(key, { at: Date.now(), hits: Object.fromEntries(hits) });
   return hits;
 }
@@ -154,7 +155,7 @@ async function loadOwnership(
     (agent): AgentLike => ({ id: agent.id, name: agent.name, status: agent.status })
   );
   const pullRequests = await loadPullRequests(ctx, companyId, cwd, cfg, force);
-  const commentHits = await loadCommentHits(ctx, companyId, issues, force);
+  const commentHits = await loadCommentHits(ctx, companyId, issues, branchNames(refs), force);
 
   const ownership = buildOwnership({
     refs,
@@ -527,7 +528,12 @@ const plugin = definePlugin({
         branch: typeof params.branch === "string" ? params.branch : undefined
       });
       const provenance = await readProvenance(ctx, companyId);
-      const commitAgents = Object.fromEntries(snapshot.commits.filter((c) => provenance[c.sha]).map((c) => [c.sha, provenance[c.sha]]));
+      const hits = snapshot.commits.filter((c) => provenance[c.sha]);
+      const needNames = hits.some((c) => !provenance[c.sha].agentName);
+      const names = needNames ? new Map((await ctx.agents.list({ companyId, limit: 200 })).map((a) => [a.id, a.name])) : new Map<string, string>();
+      const commitAgents = Object.fromEntries(
+        hits.map((c) => [c.sha, { ...provenance[c.sha], agentName: provenance[c.sha].agentName ?? names.get(provenance[c.sha].agentId) }])
+      );
       return { ...snapshot, commitAgents };
     });
 
@@ -550,11 +556,12 @@ const plugin = definePlugin({
         ctx,
         companyId,
         path,
-        cfg.trunk,
+        (typeof params.trunk === "string" && params.trunk) || cfg.trunk || (await detectDefaultBranch(path, cfg.remote)) || "",
         snapshot.refs,
         snapshot.commits,
         snapshot.ownership,
-        agents.map((agent) => ({ id: agent.id, name: agent.name, status: agent.status }))
+        agents.map((agent) => ({ id: agent.id, name: agent.name, status: agent.status })),
+        cfg
       );
     });
 

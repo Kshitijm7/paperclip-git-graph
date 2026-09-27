@@ -69,7 +69,7 @@ describe("scanCommentsForBranches", () => {
       { id: "c1", issueId: "iss-2", body: "pushed to agent/MYS-99-orphan, tests green." },
       { id: "c2", issueId: "iss-1", body: "also agent/MYS-99-orphan" },
       { id: "c3", issueId: "iss-1", body: "no branch here" }
-    ]);
+    ], ["agent/MYS-99-orphan", "develop"]);
     expect(hits.get("agent/MYS-99-orphan")).toEqual({ issueId: "iss-2", commentId: "c1" });
     expect(hits.size).toBe(1);
   });
@@ -109,7 +109,7 @@ describe("buildOwnership", () => {
       issues,
       agents,
       pullRequests: [],
-      commentHits: scanCommentsForBranches([{ id: "c1", issueId: "iss-2", body: "on agent/MYS-99-orphan now" }]),
+      commentHits: scanCommentsForBranches([{ id: "c1", issueId: "iss-2", body: "on agent/MYS-99-orphan now" }], ["agent/MYS-99-orphan"]),
       branchPattern: PATTERN
     });
     const orphan = owned.find((o) => o.branch === "agent/MYS-99-orphan")!;

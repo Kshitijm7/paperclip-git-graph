@@ -8,12 +8,12 @@ export function ownerFor(
 ): BranchOwnership | undefined {
   let branchOwner: BranchOwnership | undefined;
   for (const name of commit.refs) {
-    branchOwner = ownerByBranch.get(name.replace(/^origin\//, ""));
+    branchOwner = ownerByBranch.get(name) ?? ownerByBranch.get(name.slice(name.indexOf("/") + 1));
     if (branchOwner) break;
   }
   if (!branchOwner) return undefined;
   const run = commitAgents[commit.sha];
-  const agent = run && { agentId: run.agentId, agentName: run.agentName ?? run.agentId };
+  const agent = run && { agentId: run.agentId, agentName: run.agentName ?? "an agent" };
   const { agentId: _id, agentName: _name, agentStatus: _status, ...rest } = branchOwner;
   return { ...rest, ...agent };
 }

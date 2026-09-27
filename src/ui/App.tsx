@@ -25,6 +25,24 @@ function readStoredTab(): Tab {
   }
 }
 
+const COMPARE_KEY = "git-graph:compare";
+
+function readStored(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    return;
+  }
+}
+
 export function App({ context }: PluginPageProps) {
   const companyId = context.companyId ?? "";
   const [tab, setTab] = useState<Tab>(readStoredTab);
@@ -32,7 +50,12 @@ export function App({ context }: PluginPageProps) {
   const [newEventIds, setNewEventIds] = useState<ReadonlySet<string>>(new Set());
   const seenEventAt = useRef(0);
 
-  const activityQuery = usePluginData<ActivityData>(DATA_KEYS_V2.activity, { companyId });
+  const [compareBranch, setCompareBranch] = useState<string>(() => readStored(`${COMPARE_KEY}:${companyId}`));
+  const activityQuery = usePluginData<ActivityData>(DATA_KEYS_V2.activity, compareBranch ? { companyId, trunk: compareBranch } : { companyId });
+  const chooseCompare = (branch: string) => {
+    setCompareBranch(branch);
+    writeStored(`${COMPARE_KEY}:${companyId}`, branch);
+  };
   const stream = usePluginStream<RepoChangedEvent>(STREAM_CHANNEL, { companyId });
   const metaQuery = usePluginData<CachedSnapshotMeta>(DATA_KEYS_V2.meta, { companyId });
   const [mode, setMode] = useState<LiveMode>("connecting");
@@ -140,8 +163,8 @@ export function App({ context }: PluginPageProps) {
 
         <div style={{ flex: 1, minHeight: 0 }}>
           {tab === "Graph" && <GraphPageInner context={context} />}
-          {tab === "Agents" && <AgentsTab activity={activityQuery.data} loading={activityQuery.loading} />}
-          {tab === "Progress" && <ProgressTab activity={activityQuery.data} loading={activityQuery.loading} />}
+          {tab === "Agents" && <AgentsTab activity={activityQuery.data} loading={activityQuery.loading} onCompareChange={chooseCompare} />}
+          {tab === "Progress" && <ProgressTab activity={activityQuery.data} loading={activityQuery.loading} onCompareChange={chooseCompare} />}
           {tab === "Activity" && (
             <ActivityTab activity={activityQuery.data} loading={activityQuery.loading} newEventIds={newEventIds} />
           )}

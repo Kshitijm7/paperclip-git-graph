@@ -136,7 +136,12 @@ export interface PluginSettings {
   githubToken: unknown | null;
   githubAuth: GithubAuthMode;
   theme: ThemePreset;
-  trunk: string;
+  trunk: string;              // empty: the remote's default branch
+  remote: string;             // empty: origin, else the first remote
+  farBehindCommits: number;
+  staleDays: number;
+  hungRunMinutes: number;
+  timelineHours: number;
 }
 
 export interface StatusConfig {
@@ -227,9 +232,19 @@ export interface IssueProgress {
   updatedAt?: string;
 }
 
+export interface AgentRunSpan {
+  agentId: string;
+  start: string;
+  end: string | null;
+  status: string;             // heartbeat_runs.status: running, succeeded, failed, cancelled, timed_out, ...
+}
+
 export interface ActivityData {
-  trunk: string;              // e.g. "develop"
+  trunk: string;              // branch the counts compare against: the `trunk` param, else config, else main
+  branches?: string[];        // local branches the UI can offer as the comparison
   agents: AgentGitCard[];
+  runs?: AgentRunSpan[];      // from the host's heartbeat_runs table, last `thresholds.timelineHours`
+  thresholds?: Pick<PluginSettings, "farBehindCommits" | "staleDays" | "hungRunMinutes" | "timelineHours">;
   issues: IssueProgress[];
   events: GitEvent[];         // newest first, capped
   generatedAt: string;

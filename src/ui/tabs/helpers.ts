@@ -82,3 +82,74 @@ export const EVENT_ICON: Record<GitEvent["kind"], string> = {
   "pr.closed": "✖",
   fetch: "↓",
 };
+
+export const TONE = {
+  green: "oklch(62% 0.16 145)",
+  blue: "oklch(64% 0.14 245)",
+  purple: "oklch(62% 0.17 300)",
+  amber: "oklch(72% 0.15 70)",
+  red: "var(--destructive)",
+  muted: "var(--muted-foreground)",
+} as const;
+
+export interface Badge {
+  label: string;
+  color: string;
+}
+
+const STAGE_BADGE: Record<IssueProgress["stage"], Badge> = {
+  "no-branch": { label: "Not started", color: TONE.muted },
+  "in-progress": { label: "In progress", color: TONE.amber },
+  "pr-draft": { label: "Draft PR", color: TONE.muted },
+  "pr-open": { label: "In review", color: TONE.blue },
+  closed: { label: "Closed", color: TONE.red },
+  merged: { label: "Merged", color: TONE.purple },
+};
+
+export function stageBadge(stage: IssueProgress["stage"]): Badge {
+  return STAGE_BADGE[stage] ?? STAGE_BADGE["no-branch"];
+}
+
+export function prBadge(state: string | undefined): Badge {
+  if (state === "open") return { label: "Open", color: TONE.green };
+  if (state === "merged") return { label: "Merged", color: TONE.purple };
+  if (state === "closed") return { label: "Closed", color: TONE.red };
+  if (state === "draft") return { label: "Draft", color: TONE.muted };
+  return { label: "No PR", color: TONE.muted };
+}
+
+export function agentStatusBadge(status: string | undefined): Badge {
+  if (status === "running" || status === "active") return { label: "Running", color: TONE.green };
+  if (status === "error" || status === "failed") return { label: "Error", color: TONE.red };
+  if (status === "paused") return { label: "Paused", color: TONE.amber };
+  return { label: "Idle", color: TONE.muted };
+}
+
+export function runBadge(status: string | undefined): Badge | null {
+  if (status === "run.started") return { label: "Run started", color: TONE.blue };
+  if (status === "run.finished") return { label: "Run finished", color: TONE.green };
+  if (status === "run.failed") return { label: "Run failed", color: TONE.red };
+  return null;
+}
+
+export const EVENT_BADGE: Record<GitEvent["kind"], Badge> = {
+  "run.started": { label: "Run started", color: TONE.blue },
+  "run.finished": { label: "Run finished", color: TONE.green },
+  "run.failed": { label: "Run failed", color: TONE.red },
+  "branch.created": { label: "Branch created", color: TONE.blue },
+  "branch.updated": { label: "New commits", color: TONE.amber },
+  "branch.deleted": { label: "Branch deleted", color: TONE.muted },
+  commit: { label: "Commit", color: TONE.amber },
+  "pr.opened": { label: "PR opened", color: TONE.green },
+  "pr.merged": { label: "PR merged", color: TONE.purple },
+  "pr.closed": { label: "PR closed", color: TONE.red },
+  fetch: { label: "Fetched", color: TONE.muted },
+};
+
+export function dayLabel(day: string, now = new Date()): string {
+  const today = now.toISOString().slice(0, 10);
+  const yesterday = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+  if (day === today) return "Today";
+  if (day === yesterday) return "Yesterday";
+  return new Date(`${day}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+}
