@@ -255,7 +255,7 @@ export async function persistOwnership(
   if (pullRequests.length > 0) {
     const params: unknown[] = [];
     for (const pr of pullRequests) {
-      params.push(companyId, pr.number, pr.title, pr.url, pr.state, pr.author, pr.headRef, pr.baseRef, pr.reviewers, pr.checks ?? null, pr.updatedAt || null);
+      params.push(companyId, pr.number, pr.title, pr.url, pr.state, pr.author, pr.headRef, pr.baseRef, pgTextArray(pr.reviewers ?? []), pr.checks ?? null, pr.updatedAt || null);
     }
     const sql = `INSERT INTO ${namespace}.pull_requests (company_id, number, title, url, state, author, head_ref, base_ref, reviewers, checks, updated_at) VALUES ${placeholders(pullRequests.length, 11)} ON CONFLICT (company_id, number) DO UPDATE SET title = EXCLUDED.title, url = EXCLUDED.url, state = EXCLUDED.state, author = EXCLUDED.author, head_ref = EXCLUDED.head_ref, base_ref = EXCLUDED.base_ref, reviewers = EXCLUDED.reviewers, checks = EXCLUDED.checks, updated_at = EXCLUDED.updated_at`;
     await ctx.db.execute(sql, params);
@@ -310,7 +310,7 @@ export async function persistSnapshot(
   if (pullRequests.length > 0) {
     const params: unknown[] = [];
     for (const pr of pullRequests) {
-      params.push(companyId, pr.number, pr.title, pr.url, pr.state, pr.author, pr.headRef, pr.baseRef, pr.reviewers, pr.checks ?? null, pr.updatedAt || null);
+      params.push(companyId, pr.number, pr.title, pr.url, pr.state, pr.author, pr.headRef, pr.baseRef, pgTextArray(pr.reviewers ?? []), pr.checks ?? null, pr.updatedAt || null);
     }
     const sql = `INSERT INTO ${namespace}.pull_requests (company_id, number, title, url, state, author, head_ref, base_ref, reviewers, checks, updated_at) VALUES ${placeholders(pullRequests.length, 11)} ON CONFLICT (company_id, number) DO UPDATE SET title = EXCLUDED.title, url = EXCLUDED.url, state = EXCLUDED.state, author = EXCLUDED.author, head_ref = EXCLUDED.head_ref, base_ref = EXCLUDED.base_ref, reviewers = EXCLUDED.reviewers, checks = EXCLUDED.checks, updated_at = EXCLUDED.updated_at`;
     await ctx.db.execute(sql, params);

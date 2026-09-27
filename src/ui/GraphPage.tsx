@@ -17,7 +17,7 @@ import {
   type RepoSnapshot,
   type StatusGithub,
 } from "../shared/types.js";
-import { generateGraph, laneX, maxGraphX, type GraphLayout } from "../graph/layout.js";
+import { generateGraph, laneX, type GraphLayout } from "../graph/layout.js";
 import { okColor, prStateVar, relativeDate, shortDate } from "./theme.js";
 import { Welcome, type StatusData } from "./Welcome.js";
 import { GithubChip } from "./GithubChip.js";
@@ -33,6 +33,8 @@ const PLUGIN_MANIFEST_ID = "paperclip-git-graph";
 const LIMITS = [120, 200, 400, 1000];
 const PAGE_LOAD_THRESHOLD_ROWS = 20;
 const VIEWPORT_HEIGHT = 520;
+const LANE_STEP = 3;
+const LANE_GUTTER = 14;
 const OVERSCAN = 8;
 const AUTHOR_WIDTH = 140;
 const SHA_WIDTH = 72;
@@ -136,6 +138,16 @@ export function GraphPage({ context }: PluginPageProps) {
   const ownership = branchesQuery.data ?? snapshot?.ownership ?? [];
 
   const layout = useMemo(() => generateGraph(commits, { firstParentOnly }), [commits, firstParentOnly]);
+  const maxLaneByRow = useMemo(() => {
+    const out: number[] = [];
+    for (const d of layout.dots) out[d.row] = Math.max(out[d.row] ?? 0, d.lane);
+    for (const seg of layout.segments) {
+      const lane = Math.max(seg.lane, seg.toLane);
+      out[seg.row] = Math.max(out[seg.row] ?? 0, lane);
+      out[seg.row + 1] = Math.max(out[seg.row + 1] ?? 0, lane);
+    }
+    return out;
+  }, [layout]);
   const refByName = useMemo(() => {
     const map = new Map<string, GitRef>();
     for (const r of snapshot?.refs ?? []) map.set(r.name, r);
@@ -187,14 +199,16 @@ export function GraphPage({ context }: PluginPageProps) {
   }, [commits, needle]);
 
   const filtering = rows.length !== commits.length;
-  const rawGraphWidth = Math.max(layout.laneWidth, maxGraphX(layout));
-  const graphWidth = filtering ? 12 : Math.max(40, Math.round(rawGraphWidth) + 12);
+  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
+  const end = Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN);
+  let visibleMaxLane = 0;
+  for (let r = start; r < end; r += 1) visibleMaxLane = Math.max(visibleMaxLane, maxLaneByRow[r] ?? 0);
+  const steppedLanes = Math.ceil((visibleMaxLane + 1) / LANE_STEP) * LANE_STEP;
+  const graphWidth = filtering ? 12 : laneX(steppedLanes - 1) + LANE_GUTTER;
   const graphCap = Math.max(40, Math.round(Math.min(tableWidth * 0.4, tableWidth - AUTHOR_WIDTH - SHA_WIDTH - TIME_WIDTH - 160)));
   const graphColWidth = Math.min(graphWidth, graphCap);
   const graphScrollable = graphWidth > graphColWidth;
   const maxGraphScroll = Math.max(0, graphWidth - graphColWidth);
-  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
-  const end = Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN);
   const visible = rows.slice(start, end);
   const selectedCommit = commits.find((c) => c.sha === selected) ?? null;
   const isFirstLoad = snapshotQuery.loading && pages.size === 0 && !snapshot;
@@ -409,7 +423,7 @@ export function GraphPage({ context }: PluginPageProps) {
                   graphWidth={graphWidth}
                   graphColWidth={graphColWidth}
                   graphScrollLeft={graphScrollLeft}
-                  layout={filtering ? null : layout}
+                  layout={null}
                   refByName={refByName}
                   ownerByBranch={ownerByBranch}
                   commitAgents={commitAgents}
@@ -422,6 +436,13 @@ export function GraphPage({ context }: PluginPageProps) {
                 />
               ))}
             </div>
+            {!filtering && (
+              <div
+                style={{ position: "absolute", top: start * rowHeight, left: 0, width: graphColWidth, height: (end - start) * rowHeight, overflow: "hidden", pointerEvents: "none" }}
+              >
+                <GraphOverlay layout={layout} from={start} to={end} width={graphWidth} scrollLeft={graphScrollLeft} preset={preset} />
+              </div>
+            )}
           </div>
           {rows.length === 0 && (
             <div className="gg-dim" style={{ padding: 16 }}>
@@ -844,13 +865,7 @@ function Row({
       style={{ gridTemplateColumns: GRID(graphColWidth), height: preset.rowHeight }}
       onClick={onSelect}
     >
-      <div style={{ height: preset.rowHeight, width: graphColWidth, overflow: "hidden" }}>
-        {layout && (
-          <div style={{ transform: `translateX(${-graphScrollLeft}px)` }}>
-            <GraphCell layout={layout} row={row} width={graphWidth} preset={preset} agentLaneMap={agentLaneMap} />
-          </div>
-        )}
-      </div>
+      <div style={{ height: preset.rowHeight, width: graphColWidth }} />
       <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, paddingLeft: 8 }}>
         <div
           style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0, maxWidth: "45%", overflow: "hidden", flexShrink: 1 }}
@@ -907,37 +922,37 @@ function Subject({ text, prUrlByNumber }: { text: string; prUrlByNumber: Map<num
   );
 }
 
-function GraphCell({
+function GraphOverlay({
   layout,
-  row,
+  from,
+  to,
   width,
+  scrollLeft,
   preset,
-  agentLaneMap,
 }: {
   layout: GraphLayout;
-  row: number;
+  from: number;
+  to: number;
   width: number;
+  scrollLeft: number;
   preset: ThemePresetConfig;
-  agentLaneMap: Map<string, number>;
 }) {
   const rowHeight = preset.rowHeight;
-  const top = row * rowHeight;
-  const segments = layout.segments.filter((s) => s.row === row - 1 || s.row === row);
-  const dots = layout.dots.filter((d) => d.row === row);
+  const segments = layout.segments.filter((s) => s.row >= from - 1 && s.row < to);
+  const dots = layout.dots.filter((d) => d.row >= from && d.row < to);
   const dotRadius = preset.dotStyle === "small" ? 3 : 4;
   const colorOf = (idx: number) => preset.lanePalette[idx % preset.lanePalette.length]!;
 
   return (
-    <svg width={width} height={rowHeight} style={{ display: "block", overflow: "hidden" }}>
-      <g transform={`translate(0, ${-top})`}>
+    <svg width={width} height={(to - from) * rowHeight} style={{ display: "block", transform: `translateX(${-scrollLeft}px)` }}>
+      <g transform={`translate(0, ${-from * rowHeight})`}>
         {segments.map((s, i) => {
-          const color = colorOf(s.color);
           const y0 = s.row * rowHeight + rowHeight / 2;
           const y1 = y0 + rowHeight;
           const x0 = laneX(s.lane);
           const x1 = laneX(s.toLane);
           const d = x0 === x1 ? `M ${x0} ${y0} L ${x1} ${y1}` : `M ${x0} ${y0} C ${x0} ${y0 + rowHeight * 0.6} ${x1} ${y1 - rowHeight * 0.6} ${x1} ${y1}`;
-          return <path key={i} d={d} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" />;
+          return <path key={i} d={d} fill="none" stroke={colorOf(s.color)} strokeWidth={2} strokeLinecap="round" />;
         })}
         {dots.map((d) => {
           const color = colorOf(d.color);

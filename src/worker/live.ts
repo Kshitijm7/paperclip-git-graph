@@ -183,7 +183,8 @@ export function registerLiveUpdates(ctx: PluginContext, opts: RegisterLiveUpdate
   const handler = (kind: "run.started" | "run.finished" | "run.failed") => async (event: PluginEvent) => {
     const companyId = event.companyId;
     if (!companyId) return;
-    const { agentId, agentName, runId } = agentInfoFromPayload(event);
+    const { agentId, agentName: payloadName, runId } = agentInfoFromPayload(event);
+    const agentName = payloadName ?? (agentId ? (await ctx.agents.get(agentId, companyId).catch(() => null))?.name : undefined);
     if (agentId) {
       await recordLastRun(ctx, companyId, agentId, event.occurredAt, kind);
       if (kind !== "run.started") noteFinishedRun(companyId, { agentId, agentName, runId, at: event.occurredAt });

@@ -197,12 +197,13 @@ export function relativeDate(iso: string): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "";
   const secs = Math.max(0, (Date.now() - then) / 1000);
-  if (secs < 60) return `${Math.floor(secs)} seconds ago`;
-  if (secs < 3600) return `${Math.floor(secs / 60)} minutes ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)} hours ago`;
-  if (secs < 86400 * 30) return `${Math.floor(secs / 86400)} days ago`;
-  if (secs < 86400 * 365) return `${Math.floor(secs / (86400 * 30))} months ago`;
-  return `${Math.floor(secs / (86400 * 365))} years ago`;
+  const ago = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+  if (secs < 60) return "just now";
+  if (secs < 3600) return ago(Math.floor(secs / 60), "minute");
+  if (secs < 86400) return ago(Math.floor(secs / 3600), "hour");
+  if (secs < 86400 * 30) return ago(Math.floor(secs / 86400), "day");
+  if (secs < 86400 * 365) return ago(Math.floor(secs / (86400 * 30)), "month");
+  return ago(Math.floor(secs / (86400 * 365)), "year");
 }
 
 export function shortDate(iso: string): string {
