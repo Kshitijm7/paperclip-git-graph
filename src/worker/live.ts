@@ -2,6 +2,7 @@ import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { STREAM_CHANNEL } from "../shared/types.js";
 import type { CachedSnapshotMeta, GitEvent, PullRequestInfo, RepoChangedEvent } from "../shared/types.js";
 import { readRefs } from "./git.js";
+import { noteFinishedRun } from "./provenance.js";
 
 const DEBOUNCE_MS = 5000;
 const EVENTS_CAP = 200;
@@ -182,9 +183,10 @@ export function registerLiveUpdates(ctx: PluginContext, opts: RegisterLiveUpdate
   const handler = (kind: "run.started" | "run.finished" | "run.failed") => async (event: PluginEvent) => {
     const companyId = event.companyId;
     if (!companyId) return;
-    const { agentId, agentName } = agentInfoFromPayload(event);
+    const { agentId, agentName, runId } = agentInfoFromPayload(event);
     if (agentId) {
       await recordLastRun(ctx, companyId, agentId, event.occurredAt, kind);
+      if (kind !== "run.started") noteFinishedRun(companyId, { agentId, agentName, runId, at: event.occurredAt });
     }
     if (kind !== "run.started") {
       await appendEvents(ctx, companyId, [

@@ -10,6 +10,7 @@ import {
   ACTION_KEYS,
   DATA_KEYS,
   type BranchOwnership,
+  type CommitProvenance,
   type GitCommit,
   type GitRef,
   type PluginSettings,
@@ -24,6 +25,7 @@ import { ThemeProvider, buildAgentLaneMap, colorForAgent, laneColorFor, resolveP
 import type { ThemePresetConfig } from "../theme/presets.js";
 import { THEME_PRESETS } from "../shared/types.js";
 import { useLiveRevision } from "./tabs/LiveContext.js";
+import { ownerFor } from "./commit-owner.js";
 import { dedupeCommitsBySha, isEndOfPages, isNearBottom } from "./pagination.js";
 
 // PluginHostContext has no pluginId field (checked plugin-sdk/dist/ui/types.d.ts), so the manifest id is hardcoded here.
@@ -36,7 +38,9 @@ const AUTHOR_WIDTH = 140;
 const SHA_WIDTH = 72;
 const TIME_WIDTH = 96;
 const GRID = (graphWidth: number) =>
-  `${graphWidth}px minmax(0, 1fr) ${AUTHOR_WIDTH}px ${SHA_WIDTH}px ${TIME_WIDTH}px`;
+  `${graphWidth}px minmax(0, 1fr) ${TIME_WIDTH}px ${AUTHOR_WIDTH}px ${SHA_WIDTH}px`;
+
+const EMPTY_AGENTS: Record<string, CommitProvenance> = {};
 
 export function GraphPage({ context }: PluginPageProps) {
   const companyId = context.companyId ?? "";
@@ -62,6 +66,13 @@ export function GraphPage({ context }: PluginPageProps) {
   const prevGeneratedAtRef = useRef<string | null>(null);
   const prevHeadShaRef = useRef<string | null>(null);
   const scrollElRef = useRef<HTMLDivElement | null>(null);
+  const [viewportHeight, setViewportHeight] = useState(VIEWPORT_HEIGHT);
+  const scrollRef = useCallback((el: HTMLDivElement | null) => {
+    scrollElRef.current = el;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => setViewportHeight(entries[0]!.contentRect.height || VIEWPORT_HEIGHT));
+    observer.observe(el);
+  }, []);
   const [newShas, setNewShas] = useState<Set<string>>(new Set());
   const liveRevision = useLiveRevision();
   // callback ref: the table mounts after the welcome screen, so a mount-time effect would miss it
@@ -96,7 +107,7 @@ export function GraphPage({ context }: PluginPageProps) {
 
   // Record each page as it arrives, keyed by the offset it was requested at.
   useEffect(() => {
-    if (!snapshot) return;
+    if (!snapshot || snapshotQuery.loading) return;
     setPages((prev) => {
       if (prev.has(offset)) return prev;
       const next = new Map(prev);
@@ -104,7 +115,7 @@ export function GraphPage({ context }: PluginPageProps) {
       return next;
     });
     if (isEndOfPages(snapshot.commits.length, limit, offset, snapshot.total)) setEndReached(true);
-  }, [snapshot, offset, limit]);
+  }, [snapshot, snapshotQuery.loading, offset, limit]);
 
   // Reset scroll to top only when the head actually moved (a new commit landed), not on every poll.
   useEffect(() => {
@@ -135,6 +146,7 @@ export function GraphPage({ context }: PluginPageProps) {
     for (const o of ownership) if (o.pr) map.set(o.pr.number, o.pr.url);
     return map;
   }, [ownership]);
+  const commitAgents = snapshot?.commitAgents ?? EMPTY_AGENTS;
   const ownerByBranch = useMemo(() => {
     const map = new Map<string, BranchOwnership>();
     for (const o of ownership) map.set(o.branch, o);
@@ -182,7 +194,7 @@ export function GraphPage({ context }: PluginPageProps) {
   const graphScrollable = graphWidth > graphColWidth;
   const maxGraphScroll = Math.max(0, graphWidth - graphColWidth);
   const start = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
-  const end = Math.min(rows.length, Math.ceil((scrollTop + VIEWPORT_HEIGHT) / rowHeight) + OVERSCAN);
+  const end = Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN);
   const visible = rows.slice(start, end);
   const selectedCommit = commits.find((c) => c.sha === selected) ?? null;
   const isFirstLoad = snapshotQuery.loading && pages.size === 0 && !snapshot;
@@ -192,7 +204,7 @@ export function GraphPage({ context }: PluginPageProps) {
     const el = e.currentTarget;
     setScrollTop(el.scrollTop);
     if (endReached || snapshotQuery.loading) return;
-    if (!isNearBottom(el.scrollTop, VIEWPORT_HEIGHT, el.scrollHeight, rowHeight, PAGE_LOAD_THRESHOLD_ROWS)) return;
+    if (!isNearBottom(el.scrollTop, el.clientHeight, el.scrollHeight, rowHeight, PAGE_LOAD_THRESHOLD_ROWS)) return;
     const nextOffset = offset + limit;
     if (pages.has(nextOffset)) return;
     setOffset(nextOffset);
@@ -260,7 +272,7 @@ export function GraphPage({ context }: PluginPageProps) {
 
   return (
     <ThemeProvider presetName={presetName}>
-    <div className="gg-root" data-gg-preset={presetName ?? "paperclip"} style={{ display: "flex", height: "100%", minHeight: 620 }}>
+    <div className="gg-root" data-gg-preset={presetName ?? "paperclip"} style={{ display: "flex", height: "calc(100vh - 150px)", minHeight: 480 }}>
       <Sidebar
         snapshot={snapshot}
         ownerByBranch={ownerByBranch}
@@ -273,7 +285,7 @@ export function GraphPage({ context }: PluginPageProps) {
         onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
       />
 
-      <div ref={tableRef} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      <div ref={tableRef} style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
         <div
           style={{
             height: 36,
@@ -364,7 +376,7 @@ export function GraphPage({ context }: PluginPageProps) {
 
         <div className="gg-head" style={{ gridTemplateColumns: GRID(graphColWidth) }}>
           <span style={{ gridColumn: "1 / span 2", paddingLeft: 8, display: "flex", alignItems: "center", gap: 6 }}>
-            Graph &amp; subject
+            Graph &amp; description
             {graphScrollable && (
               <input
                 type="range"
@@ -377,15 +389,15 @@ export function GraphPage({ context }: PluginPageProps) {
               />
             )}
           </span>
+          <span>Date</span>
           <span>Author</span>
-          <span>SHA</span>
-          <span style={{ textAlign: "right" }}>Commit time</span>
+          <span>Commit</span>
         </div>
 
         <div
-          ref={scrollElRef}
+          ref={scrollRef}
           onScroll={handleScroll}
-          style={{ flex: 1, minHeight: 200, height: VIEWPORT_HEIGHT, overflow: "auto" }}
+          style={{ flex: 1, minHeight: 0, overflow: "auto" }}
         >
           <div style={{ height: rows.length * rowHeight, position: "relative" }}>
             <div style={{ position: "absolute", top: start * rowHeight, left: 0, right: 0 }}>
@@ -400,6 +412,7 @@ export function GraphPage({ context }: PluginPageProps) {
                   layout={filtering ? null : layout}
                   refByName={refByName}
                   ownerByBranch={ownerByBranch}
+                  commitAgents={commitAgents}
                   prUrlByNumber={prUrlByNumber}
                   selected={commit.sha === selected}
                   onSelect={() => setSelected(commit.sha)}
@@ -432,6 +445,7 @@ export function GraphPage({ context }: PluginPageProps) {
             commit={selectedCommit}
             refByName={refByName}
             ownerByBranch={ownerByBranch}
+            commitAgents={commitAgents}
             onClose={() => setSelected(null)}
           />
         )}
@@ -798,6 +812,7 @@ function Row({
   layout,
   refByName,
   ownerByBranch,
+  commitAgents,
   prUrlByNumber,
   selected,
   onSelect,
@@ -813,6 +828,7 @@ function Row({
   layout: GraphLayout | null;
   refByName: Map<string, GitRef>;
   ownerByBranch: Map<string, BranchOwnership>;
+  commitAgents: Record<string, CommitProvenance>;
   prUrlByNumber: Map<number, string>;
   selected: boolean;
   onSelect: () => void;
@@ -820,7 +836,7 @@ function Row({
   agentLaneMap: Map<string, number>;
   isNew: boolean;
 }) {
-  const owner = ownerFor(commit, ownerByBranch);
+  const owner = ownerFor(commit, ownerByBranch, commitAgents);
   return (
     <div
       className={isNew ? "gg-row gg-new" : "gg-row"}
@@ -836,7 +852,10 @@ function Row({
         )}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, paddingLeft: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, overflow: "hidden", flexShrink: 0 }}>
+        <div
+          style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0, maxWidth: "45%", overflow: "hidden", flexShrink: 1 }}
+          title={commit.refs.join(", ")}
+        >
           {commit.isHead && <RefBadge name="HEAD" kind="head" />}
           {commit.refs.map((name) => (
             <RefBadge key={name} name={name} kind={refByName.get(name)?.kind ?? "local"} />
@@ -845,19 +864,11 @@ function Row({
         <Subject text={commit.subject} prUrlByNumber={prUrlByNumber} />
         {owner && <OwnerPill owner={owner} variant="row" preset={preset} />}
       </div>
+      <div className="gg-dim gg-ell" title={commit.date}>{relativeDate(commit.date)}</div>
       <div className="gg-ell gg-dim">{commit.author}</div>
       <div className="gg-mono gg-dim gg-ell">{commit.sha.slice(0, 7)}</div>
-      <div className="gg-dim gg-ell" style={{ textAlign: "right" }}>{relativeDate(commit.date)}</div>
     </div>
   );
-}
-
-function ownerFor(commit: GitCommit, ownerByBranch: Map<string, BranchOwnership>) {
-  for (const name of commit.refs) {
-    const hit = ownerByBranch.get(name.replace(/^origin\//, ""));
-    if (hit) return hit;
-  }
-  return undefined;
 }
 
 // "fix:", "feature(ui)!:" and similar conventional-commit prefixes lead the subject in bold.
@@ -911,49 +922,29 @@ function GraphCell({
 }) {
   const rowHeight = preset.rowHeight;
   const top = row * rowHeight;
-  const lo = row - 1;
-  const hi = row + 1;
-  const segments = layout.segments.filter((s) => s.row >= lo && s.row <= hi);
-  const dots = layout.dots.filter((d) => d.row >= lo && d.row <= hi);
-  const dotRadius = preset.dotStyle === "small" ? 2 : preset.dotStyle === "filled" ? 3 : 2.5;
-
-  // Segments carry only a lane-index color; approximate the agent hue via the row's own commit.
-  const colorForIndex = (idx: number, sha?: string) =>
-    sha ? laneColorFor({ sha } as GitCommit, agentLaneMap, idx, preset) : preset.lanePalette[idx % preset.lanePalette.length]!;
+  const segments = layout.segments.filter((s) => s.row === row - 1 || s.row === row);
+  const dots = layout.dots.filter((d) => d.row === row);
+  const dotRadius = preset.dotStyle === "small" ? 3 : 4;
+  const colorOf = (idx: number) => preset.lanePalette[idx % preset.lanePalette.length]!;
 
   return (
     <svg width={width} height={rowHeight} style={{ display: "block", overflow: "hidden" }}>
       <g transform={`translate(0, ${-top})`}>
         {segments.map((s, i) => {
-          const color = colorForIndex(s.color, layout.dots.find((d) => d.row === s.row)?.sha);
-          const y0 = s.row * rowHeight;
+          const color = colorOf(s.color);
+          const y0 = s.row * rowHeight + rowHeight / 2;
           const y1 = y0 + rowHeight;
           const x0 = laneX(s.lane);
           const x1 = laneX(s.toLane);
-          if (x0 === x1) return <line key={i} x1={x0} y1={y0} x2={x1} y2={y1} stroke={color} strokeWidth={2} />;
-          return (
-            <path
-              key={i}
-              fill="none"
-              strokeWidth={2}
-              stroke={color}
-              d={`M ${x0} ${y0} Q ${x0} ${y1} ${(x0 + x1) / 2} ${y1} L ${x1} ${y1}`}
-            />
-          );
+          const d = x0 === x1 ? `M ${x0} ${y0} L ${x1} ${y1}` : `M ${x0} ${y0} C ${x0} ${y0 + rowHeight * 0.6} ${x1} ${y1 - rowHeight * 0.6} ${x1} ${y1}`;
+          return <path key={i} d={d} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" />;
         })}
         {dots.map((d) => {
-          const color = colorForIndex(d.color, d.sha);
+          const color = colorOf(d.color);
           const cx = laneX(d.lane);
           const cy = d.row * rowHeight + rowHeight / 2;
-          if (d.type === "merge")
-            return <circle key={d.sha} cx={cx} cy={cy} r={dotRadius + 1} fill="var(--gg-panel)" stroke={color} strokeWidth={2} />;
-          if (d.type === "head" && preset.dotStyle === "ring")
-            return (
-              <g key={d.sha}>
-                <circle cx={cx} cy={cy} r={dotRadius + 2.5} fill="none" stroke={color} strokeWidth={1.5} opacity={0.55} />
-                <circle cx={cx} cy={cy} r={dotRadius} fill={color} />
-              </g>
-            );
+          if (d.type === "merge" || d.type === "head")
+            return <circle key={d.sha} cx={cx} cy={cy} r={dotRadius} fill="var(--background)" stroke={color} strokeWidth={2} />;
           return <circle key={d.sha} cx={cx} cy={cy} r={dotRadius} fill={color} />;
         })}
       </g>
@@ -1035,15 +1026,17 @@ function DetailPanel({
   commit,
   refByName,
   ownerByBranch,
+  commitAgents,
   onClose,
 }: {
   commit: GitCommit;
   refByName: Map<string, GitRef>;
   ownerByBranch: Map<string, BranchOwnership>;
+  commitAgents: Record<string, CommitProvenance>;
   onClose: () => void;
 }) {
   const hostNavigation = useHostNavigation();
-  const owner = ownerFor(commit, ownerByBranch);
+  const owner = ownerFor(commit, ownerByBranch, commitAgents);
   const pr = owner?.pr;
 
   const pairs = [

@@ -25,6 +25,7 @@ import {
   readPersistedSnapshot,
   readSnapshotMetaLight
 } from "./worker/cache.js";
+import { attributeMovedTips, readProvenance, recordProvenance, takeFinishedRuns } from "./worker/provenance.js";
 import { diffPrEvents, diffRefEvents, emitRepoChanged, appendEvents, registerLiveUpdates } from "./worker/live.js";
 import { buildActivity, invalidateActivityCache } from "./worker/activity.js";
 
@@ -97,7 +98,7 @@ async function loadPullRequests(
   if (!slug) return [];
   const key = { scopeKind: "company" as const, scopeId: companyId, stateKey: `prs:${slug}` };
   const cached = (await ctx.state.get(key)) as { at?: number; prs?: PullRequestInfo[] } | null;
-  if (!force && cached?.at && Date.now() - cached.at < REMOTE_TTL_MS) return cached.prs ?? [];
+  if (!force && cached?.at) return cached.prs ?? [];
 
   const token = await resolveGithubToken(ctx, companyId, cfg);
 
@@ -202,12 +203,12 @@ function isOwnershipStale(ownershipRefreshedAt: string | null | undefined): bool
 }
 
 /** Heavy path: PR lookup, comment scan, entity upsert. Persists ownership only, never rebuilds commits/refs. */
-async function refreshOwnershipInternal(ctx: PluginContext, companyId: string): Promise<BranchOwnership[]> {
+async function refreshOwnershipInternal(ctx: PluginContext, companyId: string, force = true): Promise<BranchOwnership[]> {
   const { status, path } = await repoPath(ctx, companyId);
   if (!path || !status.healthy) return [];
   const cfg = await resolveConfig(ctx, companyId);
   const refs = await readRefs(path);
-  const ownership = await loadOwnership(ctx, companyId, path, refs, cfg, true);
+  const ownership = await loadOwnership(ctx, companyId, path, refs, cfg, force);
   await persistOwnership(ctx, companyId, ownership, new Date().toISOString());
   invalidateSnapshotCache(companyId);
   invalidateActivityCache(companyId);
@@ -216,7 +217,7 @@ async function refreshOwnershipInternal(ctx: PluginContext, companyId: string): 
 
 function scheduleOwnershipRefreshIfStale(ctx: PluginContext, companyId: string, ownershipRefreshedAt: string | null | undefined): void {
   if (!isOwnershipStale(ownershipRefreshedAt)) return;
-  void refreshOwnershipInternal(ctx, companyId).catch((error) =>
+  void refreshOwnershipInternal(ctx, companyId, false).catch((error) =>
     ctx.logger.warn("Lazy ownership refresh failed", { companyId, message: (error as Error).message })
   );
 }
@@ -426,7 +427,7 @@ async function refreshAndNotify(ctx: PluginContext, companyId: string, reason: "
   const previous = await readPersistedSnapshot(ctx, companyId);
   const { snapshot: rebuilt, meta: rebuiltMeta } = await loadSnapshot(ctx, { companyId }, true);
   if (!rebuiltMeta) return;
-  const ownership = await refreshOwnershipInternal(ctx, companyId);
+  const ownership = await refreshOwnershipInternal(ctx, companyId, reason !== "run");
   const snapshot: RepoSnapshot = { ...rebuilt, ownership };
   const meta: CachedSnapshotMeta = { ...rebuiltMeta, ownershipRefreshedAt: new Date().toISOString() };
 
@@ -436,6 +437,11 @@ async function refreshAndNotify(ctx: PluginContext, companyId: string, reason: "
   const newPrs = snapshot.ownership.map((entry) => entry.pr).filter(Boolean) as PullRequestInfo[];
   const newEvents = [...diffRefEvents(oldRefs, newRefs), ...diffPrEvents(oldPrs, newPrs)];
   await appendEvents(ctx, companyId, newEvents);
+  if (previous) {
+    await recordProvenance(ctx, companyId, attributeMovedTips(takeFinishedRuns(companyId), oldRefs, newRefs)).catch((error) =>
+      ctx.logger.warn("Commit provenance write failed", { companyId, message: (error as Error).message })
+    );
+  }
 
   for (const event of newEvents) {
     if (event.kind === "pr.merged") {
@@ -513,13 +519,16 @@ const plugin = definePlugin({
 
     ctx.data.register(DATA_KEYS.snapshot, async (params) => {
       const companyId = requireCompanyId(params);
-      return buildSnapshot(ctx, {
+      const snapshot = await buildSnapshot(ctx, {
         companyId,
         limit: typeof params.limit === "number" ? params.limit : undefined,
         offset: typeof params.offset === "number" ? params.offset : undefined,
         firstParentOnly: params.firstParentOnly === true,
         branch: typeof params.branch === "string" ? params.branch : undefined
       });
+      const provenance = await readProvenance(ctx, companyId);
+      const commitAgents = Object.fromEntries(snapshot.commits.filter((c) => provenance[c.sha]).map((c) => [c.sha, provenance[c.sha]]));
+      return { ...snapshot, commitAgents };
     });
 
     ctx.data.register(DATA_KEYS_V2.meta, async (params) => {
