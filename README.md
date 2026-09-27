@@ -19,10 +19,15 @@ A plugin for [Paperclip](https://github.com/paperclipai/paperclip). When a compa
 
 ![Commit graph with branch labels, issue keys and pull request state](docs/screenshots/commit-graph.png)
 
-> [!NOTE]
-> The screenshots use made-up data: an example company called Acme with issue keys like `ACME-123`.
-
 ## Features
+
+| Tab | What it answers |
+|---|---|
+| [Graph](#graph) | What happened in the repo, on which branch, for which issue |
+| [Agents](#agents) | Who is working, who is idle, whose runs are failing |
+| [Progress](#progress) | Where each issue stands, from branch to merge |
+| [Activity](#activity) | What changed today, in plain sentences |
+| [Dashboard widget](#dashboard-widget) | The short version, on the Paperclip dashboard |
 
 ### Graph
 
@@ -32,11 +37,17 @@ The page loads 120 commits at a time as you scroll, and the graph column only ta
 
 ### Agents
 
-A timeline of every agent's runs over the last 24 hours, one row per agent.
-
 ![Agents tab with run timeline and needs attention box](docs/screenshots/agents.png)
 
-On the left of each row you see the agent's status, its current branch, how far that branch is ahead of and behind the branch you compare against, and its pull request. On the right, green bars are runs that succeeded, red marks are failures, blue is a run still going, and amber dots are new commits. A failed run that hung for over an hour is drawn as a thin line so it doesn't hide the real work.
+A timeline of every agent's runs over the last 24 hours, one row per agent. On the left of each row you see the agent's status, its current branch, how far that branch is ahead of and behind the branch you compare against, and its pull request. On the right are its runs:
+
+| Mark | Meaning |
+|---|---|
+| Green bar | Run succeeded |
+| Blue bar | Run still going |
+| Red bar | Run failed |
+| Thin red line | Failed run that hung for over an hour, drawn thin so it doesn't hide the real work |
+| Amber dot | New commits on the agent's branch |
 
 Above the rows, a Needs attention box lists agents whose last run failed, branches that have fallen far behind, open pull requests with no reviewer, and branches with no commit for a few days. The thresholds are settings. A bar chart at the bottom shows how many runs started each hour across the whole team.
 
@@ -44,23 +55,21 @@ Run data comes from Paperclip's own run history, so the timeline is complete fro
 
 ### Progress
 
-One row per issue that has a branch.
-
 ![Progress tab with stage, ahead and behind counts and pull request state](docs/screenshots/progress.png)
 
-The stage column says in words where the work is (In progress, In review, Merged, Closed) with a four step bar under it: branch, commits, pull request, merged. You can sort by oldest update or least progress, hide merged work, and choose which branch the ahead and behind counts compare against.
+One row per issue that has a branch. The stage column says in words where the work is (In progress, In review, Merged, Closed) with a four step bar under it: branch, commits, pull request, merged. You can sort by oldest update or least progress, hide merged work, and choose which branch the ahead and behind counts compare against.
 
 ### Activity
 
-A feed of what happened, grouped by day: runs finishing or failing, branches created or moved, pull requests opened, merged or closed, and fetches. Each line is a plain sentence with links to the issue and pull request.
-
 ![Activity tab grouped by day](docs/screenshots/activity.png)
+
+A feed of what happened, grouped by day: runs finishing or failing, branches created or moved, pull requests opened, merged or closed, and fetches. Each line is a plain sentence with links to the issue and pull request.
 
 ### Dashboard widget
 
-A card for the Paperclip dashboard with agents on a branch, open pull requests, merges this week, and the five most recent agents. It shows the last data it had straight away and refreshes in the background. The Refresh button asks GitHub for new pull request data.
-
 <img src="docs/screenshots/widget.png" alt="Dashboard widget" width="420">
+
+A card for the Paperclip dashboard with agents on a branch, open pull requests, merges this week, and the five most recent agents. It shows the last data it had straight away and refreshes in the background. The Refresh button asks GitHub for new pull request data.
 
 ## Where it helps
 
@@ -94,21 +103,18 @@ Commits, branches, ownership, pull requests and events are stored in the plugin'
 
 ## Install
 
-You need Node 20 or newer, git on your PATH, and Paperclip 2026.831 or newer.
+**Requirements:** Node 20 or newer, git on your PATH, and Paperclip 2026.831 or newer.
 
-```bash
-scripts/install.sh
-```
+1. Run the install script. It clones or updates this repository, installs dependencies, builds, and runs `paperclipai plugin install`.
 
-On Windows:
+   ```bash
+   scripts/install.sh      # macOS and Linux
+   scripts/install.ps1     # Windows PowerShell
+   ```
 
-```powershell
-scripts/install.ps1
-```
+2. Open **Git Graph** in the Paperclip sidebar and pick a repository (see below).
 
-The script clones or updates this repository, installs dependencies, builds, and runs `paperclipai plugin install`. To update later, run `scripts/update.sh` or `scripts/update.ps1`.
-
-To install by hand:
+To update later, run `scripts/update.sh` or `scripts/update.ps1`. To install by hand instead:
 
 ```bash
 npm install && npm run build && paperclipai plugin install .
@@ -150,7 +156,17 @@ All settings are in Paperclip's plugin settings form. Empty values are worked ou
 
 ## What it uses from Paperclip
 
-The plugin keeps its data in its own database namespace and reads Paperclip's run history for the timeline. Each branch is also saved as a Paperclip entity, so other plugins can list them. Fetches and merges go to the company activity log, and branch and pull request counts are written as metrics. Agents can call the `git_graph_branches` tool to get the branch list without running git themselves.
+The plugin builds on Paperclip's own services instead of running anything on the side.
+
+| Paperclip service | Used for |
+|---|---|
+| Plugin database namespace | Commits, branches, pull requests, events and commit provenance |
+| `heartbeat_runs` (read only) | The run timeline on the Agents tab |
+| Entities | One entity per branch, so other plugins can list them |
+| Activity log | Fetches and merges |
+| Metrics | Open pull request and branch counts |
+| Agent tools | `git_graph_branches`, so agents can ask for the branch list instead of running git |
+| Jobs | The scheduled `git fetch` |
 
 ## Contributing
 
